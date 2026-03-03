@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import VideoUpload from './components/VideoUpload';
 import LaneDensityCards from './components/LaneDensityCards';
@@ -7,17 +7,20 @@ import DensityChart from './components/DensityChart';
 import EmergencyVehicle from './components/EmergencyVehicle';
 import LicensePlate from './components/LicensePlate';
 import ViolationLogs from './components/ViolationLogs';
+import { getDashboardSummary } from './api/index.js';
 
-// Stat counter at the top
-const TopStatBar = () => {
-  const stats = [
-    { label: 'Total Vehicles Today', value: '14,823', icon: '🚗', color: '#3b82f6' },
-    { label: 'Violations Detected', value: '38', icon: '⚠️', color: '#ef4444' },
-    { label: 'Avg Wait Time', value: '1m 42s', icon: '⏱️', color: '#f59e0b' },
-    { label: 'Signal Cycles', value: '1,204', icon: '🔄', color: '#10b981' },
-    { label: 'Emergency Events', value: '2', icon: '🚨', color: '#ef4444' },
-    { label: 'AI Model Uptime', value: '99.8%', icon: '🤖', color: '#8b5cf6' },
+// ── Top stat bar ──────────────────────────────────────────────────────────────
+const TopStatBar = ({ stats }) => {
+  const defaultStats = [
+    { label: 'Total Vehicles Today', value: '—', icon: '🚗', color: '#3b82f6' },
+    { label: 'Violations Detected', value: '—', icon: '⚠️', color: '#ef4444' },
+    { label: 'Avg Wait Time', value: '—', icon: '⏱️', color: '#f59e0b' },
+    { label: 'Signal Cycles', value: '—', icon: '🔄', color: '#10b981' },
+    { label: 'Emergency Events', value: '—', icon: '🚨', color: '#ef4444' },
+    { label: 'AI Model Uptime', value: '—', icon: '🤖', color: '#8b5cf6' },
   ];
+
+  const display = stats && stats.length ? stats : defaultStats;
 
   return (
     <div style={{
@@ -26,7 +29,7 @@ const TopStatBar = () => {
       gap: '12px',
       marginBottom: '24px',
     }}>
-      {stats.map((s) => (
+      {display.map((s) => (
         <div
           key={s.label}
           className="glass-card"
@@ -43,8 +46,44 @@ const TopStatBar = () => {
   );
 };
 
+// ── API status badge ──────────────────────────────────────────────────────────
+const ApiStatusBadge = ({ status }) => {
+  const cfg = {
+    connected: { color: '#10b981', label: 'API Connected' },
+    error: { color: '#ef4444', label: 'API Offline — using local data' },
+    loading: { color: '#f59e0b', label: 'Connecting…' },
+  }[status] || { color: '#64748b', label: 'Unknown' };
+
+  return (
+    <div style={{
+      position: 'fixed', bottom: 20, right: 20,
+      display: 'flex', alignItems: 'center', gap: '7px',
+      padding: '8px 14px',
+      background: 'rgba(15,23,42,0.85)',
+      border: `1px solid ${cfg.color}44`,
+      borderRadius: '999px',
+      backdropFilter: 'blur(10px)',
+      zIndex: 9999,
+      fontSize: '0.72rem',
+      fontWeight: 600,
+      color: cfg.color,
+    }}>
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%',
+        background: cfg.color,
+        boxShadow: status === 'connected' ? `0 0 8px ${cfg.color}` : 'none',
+        animation: status === 'connected' ? 'pulse 2s infinite' : 'none',
+      }} />
+      {cfg.label}
+    </div>
+  );
+};
+
+// ── Main App ──────────────────────────────────────────────────────────────────
 const App = () => {
   const [activeTab, setActiveTab] = useState('overview');
+  const [apiStatus, setApiStatus] = useState('loading');
+  const [dashData, setDashData] = useState(null);
 
   const tabs = [
     { id: 'overview', label: '🗺 Overview' },
@@ -52,6 +91,22 @@ const App = () => {
     { id: 'violations', label: '⚠️ Violations' },
     { id: 'emergency', label: '🚨 Emergency' },
   ];
+
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const data = await getDashboardSummary();
+      setDashData(data);
+      setApiStatus('connected');
+    } catch {
+      setApiStatus('error');
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDashboard();
+    const interval = setInterval(fetchDashboard, 15000); // refresh every 15 s
+    return () => clearInterval(interval);
+  }, [fetchDashboard]);
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--color-bg-primary)' }}>
@@ -88,27 +143,22 @@ const App = () => {
           ))}
         </div>
 
-        {/* TOP STATS */}
-        <TopStatBar />
+        {/* TOP STATS — live from backend or fallback */}
+        <TopStatBar stats={dashData?.topStats} />
 
         {/* ── OVERVIEW TAB ── */}
         {activeTab === 'overview' && (
           <>
-            {/* Row 1: Video Upload + Signal Allocation */}
             <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '20px', marginBottom: '20px' }}>
               <VideoUpload />
-              <SignalAllocation />
+              <SignalAllocation liveData={dashData?.signalAllocation} />
             </div>
-
-            {/* Row 2: Lane Density Cards (full width) */}
             <div style={{ marginBottom: '20px' }}>
-              <LaneDensityCards />
+              <LaneDensityCards liveData={dashData?.laneDensity} />
             </div>
-
-            {/* Row 3: Chart + Emergency */}
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
-              <DensityChart />
-              <EmergencyVehicle />
+              <DensityChart liveData={dashData?.chartHistory} />
+              <EmergencyVehicle liveData={dashData?.emergencyEvents} />
             </div>
           </>
         )}
@@ -117,25 +167,25 @@ const App = () => {
         {activeTab === 'analytics' && (
           <>
             <div style={{ marginBottom: '20px' }}>
-              <LaneDensityCards />
+              <LaneDensityCards liveData={dashData?.laneDensity} />
             </div>
-            <DensityChart />
+            <DensityChart liveData={dashData?.chartHistory} />
           </>
         )}
 
         {/* ── VIOLATIONS TAB ── */}
         {activeTab === 'violations' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '20px' }}>
-            <ViolationLogs />
-            <LicensePlate />
+            <ViolationLogs liveData={dashData?.violationLogs} />
+            <LicensePlate liveData={dashData?.detectedPlates} />
           </div>
         )}
 
         {/* ── EMERGENCY TAB ── */}
         {activeTab === 'emergency' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <EmergencyVehicle />
-            <SignalAllocation />
+            <EmergencyVehicle liveData={dashData?.emergencyEvents} />
+            <SignalAllocation liveData={dashData?.signalAllocation} />
           </div>
         )}
       </main>
@@ -143,9 +193,18 @@ const App = () => {
       {/* Footer */}
       <footer style={{ borderTop: '1px solid rgba(255,255,255,0.05)', padding: '20px 24px', textAlign: 'center' }}>
         <p style={{ margin: 0, color: '#334155', fontSize: '0.75rem' }}>
-          AI Traffic Signal Management System · ATMS v2.4 · All data is simulated for demonstration purposes
+          AI Traffic Signal Management System · ATMS v2.4 · Backend: Flask API · Formula: GreenTime = MIN + (count/total) × (MAX − MIN)
         </p>
       </footer>
+
+      <ApiStatusBadge status={apiStatus} />
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   );
 };

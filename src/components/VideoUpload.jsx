@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { uploadVideo, getVideoStatus } from '../api/index.js';
 
 const LANES = [
     { id: 'north', label: 'North Lane', icon: '⬆️', color: '#3b82f6', bg: 'rgba(59,130,246,0.08)', border: 'rgba(59,130,246,0.25)', camera: 'CAM-01' },
@@ -98,6 +99,8 @@ const VideoUpload = () => {
     const [processing, setProcessing] = useState(false);
     const [progress, setProgress] = useState(0);
     const [done, setDone] = useState(false);
+    const [uploadResults, setUploadResults] = useState([]);
+    const [uploadError, setUploadError] = useState(null);
     const allInputRef = useRef(null);
 
     const setFile = (laneId, file) => setFiles((prev) => ({ ...prev, [laneId]: file }));
@@ -106,21 +109,41 @@ const VideoUpload = () => {
     const uploadedCount = Object.values(files).filter(Boolean).length;
     const canProcess = uploadedCount > 0;
 
-    const handleProcess = () => {
+    const handleProcess = async () => {
         setProcessing(true);
         setDone(false);
         setProgress(0);
-        const interval = setInterval(() => {
-            setProgress((p) => {
-                if (p >= 100) { clearInterval(interval); setProcessing(false); setDone(true); return 100; }
-                return p + Math.random() * 10;
-            });
-        }, 180);
+        setUploadError(null);
+        setUploadResults([]);
+
+        const filesToUpload = LANES.filter((l) => files[l.id]);
+        const results = [];
+        const perFile = 100 / filesToUpload.length;
+        let cumulative = 0;
+
+        try {
+            for (const lane of filesToUpload) {
+                const file = files[lane.id];
+                const result = await uploadVideo(file, (pct) => {
+                    setProgress(Math.round(cumulative + pct * perFile / 100));
+                });
+                results.push({ lane: lane.label, ...result });
+                cumulative += perFile;
+                setProgress(Math.round(cumulative));
+            }
+            setUploadResults(results);
+            setDone(true);
+        } catch (err) {
+            setUploadError(err.message);
+        } finally {
+            setProcessing(false);
+        }
     };
 
     const handleReset = () => {
         setFiles({ north: null, south: null, east: null, west: null });
         setDone(false); setProgress(0); setProcessing(false);
+        setUploadResults([]); setUploadError(null);
     };
 
     // Bulk upload – assign files to first empty lanes in order
@@ -207,19 +230,38 @@ const VideoUpload = () => {
                 </div>
             )}
 
-            {/* ── Results ── */}
-            {done && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', margin: '12px 0' }}>
-                    {[
-                        { label: 'Vehicles Detected', value: `${uploadedCount * 46}` },
-                        { label: 'Feeds Processed', value: `${uploadedCount}/4` },
-                        { label: 'Violations Found', value: `${uploadedCount * 2}` },
-                    ].map((item) => (
-                        <div key={item.label} style={{ padding: '12px', background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.15)', borderRadius: '10px', textAlign: 'center' }}>
-                            <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#10b981' }}>{item.value}</div>
-                            <div style={{ fontSize: '0.68rem', color: '#64748b', marginTop: '2px' }}>{item.label}</div>
-                        </div>
-                    ))}
+            {/* ── Upload Error ── */}
+            {uploadError && (
+                <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '10px', margin: '12px 0', fontSize: '0.78rem', color: '#fca5a5' }}>
+                    ⚠️ Upload failed: {uploadError}
+                </div>
+            )}
+
+            {/* ── Results — from backend ── */}
+            {done && uploadResults.length > 0 && (
+                <div style={{ margin: '12px 0' }}>
+                    <div style={{ fontSize: '0.65rem', color: '#475569', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Backend Upload Results</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(uploadResults.length, 2)}, 1fr)`, gap: '8px' }}>
+                        {uploadResults.map((r) => (
+                            <div key={r.jobId} style={{ padding: '10px 12px', background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.15)', borderRadius: '10px' }}>
+                                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#34d399', marginBottom: '4px' }}>✅ {r.lane}</div>
+                                <div style={{ fontSize: '0.62rem', color: '#64748b' }}>📁 {r.originalName}</div>
+                                <div style={{ fontSize: '0.62rem', color: '#64748b' }}>💾 {r.sizeMb} MB · Job: {r.jobId?.slice(0, 8)}…</div>
+                            </div>
+                        ))}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginTop: '10px' }}>
+                        {[
+                            { label: 'Feeds Uploaded', value: `${uploadResults.length}/4` },
+                            { label: 'Total Size', value: `${uploadResults.reduce((s, r) => s + r.sizeMb, 0).toFixed(1)} MB` },
+                            { label: 'Status', value: 'Processing' },
+                        ].map((item) => (
+                            <div key={item.label} style={{ padding: '12px', background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.12)', borderRadius: '10px', textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#10b981' }}>{item.value}</div>
+                                <div style={{ fontSize: '0.68rem', color: '#64748b', marginTop: '2px' }}>{item.label}</div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
 
