@@ -9,6 +9,7 @@ import LicensePlate from './components/LicensePlate';
 import ViolationLogs from './components/ViolationLogs';
 import { getDashboardSummary } from './api/index.js';
 
+
 // ── Top stat bar ──────────────────────────────────────────────────────────────
 const TopStatBar = ({ stats }) => {
   const defaultStats = [
