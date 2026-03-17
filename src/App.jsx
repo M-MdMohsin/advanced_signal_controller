@@ -11,7 +11,7 @@ import { getDashboardSummary } from './api/index.js';
 
 
 // ── Top stat bar ──────────────────────────────────────────────────────────────
-const TopStatBar = ({ stats }) => {
+const TopStatBar = ({ stats, videoStats }) => {
   const defaultStats = [
     { label: 'Total Vehicles Today', value: '—', icon: '🚗', color: '#3b82f6' },
     { label: 'Violations Detected', value: '—', icon: '⚠️', color: '#ef4444' },
@@ -21,7 +21,15 @@ const TopStatBar = ({ stats }) => {
     { label: 'AI Model Uptime', value: '—', icon: '🤖', color: '#8b5cf6' },
   ];
 
-  const display = stats && stats.length ? stats : defaultStats;
+  // If we have video detection results, override vehicles stat
+  let display = (stats && stats.length) ? [...stats] : [...defaultStats];
+  if (videoStats) {
+    display = display.map((s) =>
+      s.label === 'Total Vehicles Today'
+        ? { ...s, value: String(videoStats.totalVehicles ?? '—'), icon: '📹' }
+        : s
+    );
+  }
 
   return (
     <div style={{
@@ -86,6 +94,12 @@ const App = () => {
   const [apiStatus, setApiStatus] = useState('loading');
   const [dashData, setDashData] = useState(null);
 
+  // ── Detection results from uploaded video (real YOLO data) ────────────────
+  // When set, these override the random dashboard data for density & signals.
+  const [detectionData, setDetectionData] = useState(null);
+  // detectionData shape:
+  //   { laneDetails, signalAllocation, laneCounts, totalVehicles, fromVideo: true }
+
   const tabs = [
     { id: 'overview', label: '🗺 Overview' },
     { id: 'analytics', label: '📊 Analytics' },
@@ -105,9 +119,22 @@ const App = () => {
 
   useEffect(() => {
     fetchDashboard();
-    const interval = setInterval(fetchDashboard, 15000); // refresh every 15 s
+    const interval = setInterval(fetchDashboard, 15000);
     return () => clearInterval(interval);
   }, [fetchDashboard]);
+
+  /* ── Called by VideoUpload when YOLO analysis completes ─────────────────
+     results = { laneDetails, signalAllocation, totalVehicles, fromVideo }  */
+  const handleDetectionComplete = useCallback((results) => {
+    setDetectionData(results);
+    // Optionally: if no backend signal allocation came back, keep dashboard's
+  }, []);
+
+  // ── Decide which data to show ─────────────────────────────────────────────
+  // Priority: video detection > live dashboard API > dummy fallback (in components)
+  const laneDensityData = detectionData?.laneDetails ?? dashData?.laneDensity;
+  const signalData = detectionData?.signalAllocation ?? dashData?.signalAllocation;
+  const fromVideo = !!detectionData?.fromVideo;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--color-bg-primary)' }}>
@@ -120,6 +147,37 @@ const App = () => {
       <Header />
 
       <main style={{ maxWidth: '1600px', margin: '0 auto', padding: '28px 24px 48px' }}>
+
+        {/* ── Video-detection banner (shown after upload completes) ── */}
+        {fromVideo && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '12px',
+            padding: '12px 18px', marginBottom: '20px',
+            background: 'rgba(16,185,129,0.08)',
+            border: '1px solid rgba(16,185,129,0.25)',
+            borderRadius: '12px',
+          }}>
+            <span style={{ fontSize: '1.1rem' }}>📹</span>
+            <div style={{ flex: 1 }}>
+              <span style={{ fontWeight: 700, color: '#10b981', fontSize: '0.85rem' }}>Live Video Analysis Active</span>
+              <span style={{ fontSize: '0.78rem', color: '#64748b', marginLeft: '10px' }}>
+                Lane Density and Signal Allocation panels are showing real YOLOv8 results from your uploaded video.
+                {detectionData?.totalVehicles != null && ` ${detectionData.totalVehicles} vehicles detected.`}
+              </span>
+            </div>
+            <button
+              onClick={() => setDetectionData(null)}
+              style={{
+                padding: '5px 12px', background: 'rgba(255,255,255,0.05)',
+                color: '#64748b', border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '8px', cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600,
+              }}
+            >
+              Clear &amp; use live feed
+            </button>
+          </div>
+        )}
+
         {/* Tab Nav */}
         <div style={{ display: 'flex', gap: '4px', marginBottom: '28px', padding: '4px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', width: 'fit-content', border: '1px solid rgba(255,255,255,0.06)' }}>
           {tabs.map((tab) => (
@@ -144,18 +202,19 @@ const App = () => {
           ))}
         </div>
 
-        {/* TOP STATS — live from backend or fallback */}
-        <TopStatBar stats={dashData?.topStats} />
+        {/* TOP STATS */}
+        <TopStatBar stats={dashData?.topStats} videoStats={detectionData} />
 
         {/* ── OVERVIEW TAB ── */}
         {activeTab === 'overview' && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '20px', marginBottom: '20px' }}>
-              <VideoUpload />
-              <SignalAllocation liveData={dashData?.signalAllocation} />
+              {/* VideoUpload now receives onDetectionComplete callback */}
+              <VideoUpload onDetectionComplete={handleDetectionComplete} />
+              <SignalAllocation liveData={signalData} fromVideo={fromVideo} />
             </div>
             <div style={{ marginBottom: '20px' }}>
-              <LaneDensityCards liveData={dashData?.laneDensity} />
+              <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
               <DensityChart liveData={dashData?.chartHistory} />
@@ -168,7 +227,7 @@ const App = () => {
         {activeTab === 'analytics' && (
           <>
             <div style={{ marginBottom: '20px' }}>
-              <LaneDensityCards liveData={dashData?.laneDensity} />
+              <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
             </div>
             <DensityChart liveData={dashData?.chartHistory} />
           </>
@@ -186,7 +245,7 @@ const App = () => {
         {activeTab === 'emergency' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <EmergencyVehicle liveData={dashData?.emergencyEvents} />
-            <SignalAllocation liveData={dashData?.signalAllocation} />
+            <SignalAllocation liveData={signalData} fromVideo={fromVideo} />
           </div>
         )}
       </main>
@@ -194,18 +253,18 @@ const App = () => {
       {/* Footer */}
       <footer style={{ borderTop: '1px solid rgba(255,255,255,0.05)', padding: '20px 24px', textAlign: 'center' }}>
         <p style={{ margin: 0, color: '#334155', fontSize: '0.75rem' }}>
-          AI Traffic Signal Management System · ATMS v2.4 · Backend: Flask API · Formula: GreenTime = MIN + (count/total) × (MAX − MIN)
+          AI Traffic Signal Management System · ATMS v2.4 · Backend: Flask + YOLOv8 · Formula: GreenTime = MIN + (count/total) × (MAX − MIN)
         </p>
       </footer>
 
       <ApiStatusBadge status={apiStatus} />
 
       <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}</style>
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.4; }
+                }
+            `}</style>
     </div>
   );
 };

@@ -9,6 +9,8 @@ from routes.video import video_bp
 from routes.density import density_bp
 from routes.signals import signals_bp
 from routes.dashboard import dashboard_bp
+from routes.detection import detection_bp
+
 
 def create_app():
     app = Flask(__name__)
@@ -18,14 +20,27 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # Register blueprints
-    app.register_blueprint(video_bp,    url_prefix="/api/video")
-    app.register_blueprint(density_bp,  url_prefix="/api/density")
-    app.register_blueprint(signals_bp,  url_prefix="/api/signals")
+    app.register_blueprint(video_bp,     url_prefix="/api/video")
+    app.register_blueprint(density_bp,   url_prefix="/api/density")
+    app.register_blueprint(signals_bp,   url_prefix="/api/signals")
     app.register_blueprint(dashboard_bp, url_prefix="/api/dashboard")
+    app.register_blueprint(detection_bp, url_prefix="/api/detection")
 
     @app.route("/api/health")
     def health():
-        return {"status": "ok", "service": "ATMS Backend", "version": "1.0.0"}
+        # Report whether YOLO is available
+        try:
+            from ultralytics import YOLO   # noqa: F401
+            yolo_ready = True
+        except ImportError:
+            yolo_ready = False
+
+        return {
+            "status":    "ok",
+            "service":   "ATMS Backend",
+            "version":   "2.0.0",
+            "yoloReady": yolo_ready,
+        }
 
     return app
 

@@ -11,29 +11,44 @@ const statusConfig = {
 const trendIcon = { up: '↑', down: '↓', stable: '→' };
 const trendColor = { up: '#ef4444', down: '#10b981', stable: '#94a3b8' };
 
-const LaneDensityCards = () => (
-    <div>
-        <div className="section-header">
-            <div className="section-header-icon" style={{ background: 'linear-gradient(135deg, #f59e0b20, #ef444430)' }}>🚗</div>
-            <div>
-                <div className="section-title">Lane Density Monitor</div>
-                <div className="section-subtitle">Real-time vehicle density across all lanes</div>
+// ── Component ──────────────────────────────────────────────────────────────────
+// liveData  – array from backend (real YOLO or random density).
+//             Falls back to static dummyData only when liveData is absent.
+// fromVideo – boolean: true when data came from an uploaded video (YOLO)
+const LaneDensityCards = ({ liveData, fromVideo }) => {
+    const data = (liveData && liveData.length > 0) ? liveData : laneDensityData;
+
+    return (
+        <div>
+            <div className="section-header">
+                <div className="section-header-icon" style={{ background: 'linear-gradient(135deg, #f59e0b20, #ef444430)' }}>🚗</div>
+                <div>
+                    <div className="section-title">Lane Density Monitor</div>
+                    <div className="section-subtitle">
+                        {fromVideo
+                            ? '⚡ Live results from uploaded video (YOLOv8)'
+                            : 'Real-time vehicle density across all lanes'}
+                    </div>
+                </div>
+                <div
+                    className={`status-badge ${fromVideo ? 'status-green' : 'status-blue'}`}
+                    style={{ marginLeft: 'auto' }}
+                >
+                    <span className="pulse-dot" style={{ background: fromVideo ? '#10b981' : '#3b82f6' }} />
+                    {fromVideo ? 'Video Analysis' : 'Live Feed'}
+                </div>
             </div>
-            <div className="status-badge status-blue" style={{ marginLeft: 'auto' }}>
-                <span className="pulse-dot" style={{ background: '#3b82f6' }} />
-                Live Feed
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {data.map((lane, idx) => (
+                    <LaneCard key={lane.id ?? idx} lane={lane} delay={idx} />
+                ))}
             </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
-            {laneDensityData.map((lane, idx) => (
-                <LaneCard key={lane.id} lane={lane} delay={idx} />
-            ))}
-        </div>
-    </div>
-);
+    );
+};
 
 const LaneCard = ({ lane, delay }) => {
-    const cfg = statusConfig[lane.status];
+    const cfg = statusConfig[lane.status] ?? statusConfig.low;
     const mini = [45, 60, 52, 68, 75, lane.density].map((v, i) => v + (i % 2 === 0 ? -5 : 5));
 
     return (
@@ -57,8 +72,8 @@ const LaneCard = ({ lane, delay }) => {
                         {lane.density}
                     </span>
                     <span style={{ fontSize: '1rem', color: '#64748b' }}>%</span>
-                    <span style={{ fontSize: '1rem', color: trendColor[lane.trend], marginLeft: '4px', fontWeight: 700 }}>
-                        {trendIcon[lane.trend]}
+                    <span style={{ fontSize: '1rem', color: trendColor[lane.trend] ?? '#94a3b8', marginLeft: '4px', fontWeight: 700 }}>
+                        {trendIcon[lane.trend] ?? '→'}
                     </span>
                 </div>
                 <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '2px' }}>
@@ -66,18 +81,18 @@ const LaneCard = ({ lane, delay }) => {
                 </div>
             </div>
 
-            {/* Progress */}
+            {/* Progress Bar */}
             <div className="progress-bar-track" style={{ marginBottom: '14px' }}>
                 <div className="progress-bar-fill" style={{ width: `${lane.density}%`, background: `linear-gradient(90deg, ${cfg.color}aa, ${cfg.color})` }} />
             </div>
 
-            {/* Mini Sparkline */}
+            {/* Sparkline */}
             <Sparkline data={mini} color={cfg.color} />
 
             {/* Stats Row */}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                 <Stat label="Congestion" value={lane.congestionLevel} color={cfg.color} />
-                <Stat label="Avg Speed" value={`${lane.avgSpeed} km/h`} color="#94a3b8" />
+                <Stat label="Avg Speed" value={`${lane.avgSpeed ?? '—'} km/h`} color="#94a3b8" />
             </div>
         </div>
     );

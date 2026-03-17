@@ -86,5 +86,21 @@ export const uploadVideo = (file, onProgress) => {
     });
 };
 
+// ── Video Status (job polling) ─────────────────────────────────────────────
+// Returns: { status, progress, laneDetails, signalAllocation, totalVehicles, ... }
 export const getVideoStatus = (jobId) =>
     request(`/video/status/${jobId}`);
+
+// ── Detection Results (full YOLO output for a completed job) ───────────────
+// Returns: { laneDetails, signalAllocation, laneCounts, totalVehicles, ... }
+export const getDetectionResults = (jobId) =>
+    request(`/detection/results/${jobId}`);
+
+// ── Annotated frame snapshots ──────────────────────────────────────────────
+export const getAnnotatedFrames = (jobId) =>
+    request(`/detection/annotated/${jobId}`);
+
+// ── Job management ─────────────────────────────────────────────────────────
+export const listVideoJobs = () => request("/video/jobs");
+export const deleteVideoJob = (jobId) =>
+    request(`/video/jobs/${jobId}`, { method: "DELETE" });
