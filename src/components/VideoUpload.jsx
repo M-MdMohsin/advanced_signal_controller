@@ -43,6 +43,8 @@ async function pollJobUntilDone(jobId, onProgressTick) {
                     totalVehicles: det.totalVehicles ?? status.totalVehicles,
                     processingTime: det.processingTime ?? status.processingTime,
                     frameCount: det.frameCount ?? status.frameCount,
+                    type: det.type ?? status.type,
+                    output: det.output ?? status.output,
                 };
             } catch {
                 // Fallback to raw status fields if detection endpoint unavailable
@@ -53,6 +55,8 @@ async function pollJobUntilDone(jobId, onProgressTick) {
                     totalVehicles: status.totalVehicles,
                     processingTime: status.processingTime,
                     frameCount: status.frameCount,
+                    type: status.type,
+                    output: status.output,
                 };
             }
         }
@@ -65,12 +69,23 @@ async function pollJobUntilDone(jobId, onProgressTick) {
 const LaneUploadSlot = ({ lane, file, onFile, onRemove }) => {
     const inputRef = useRef(null);
     const [drag, setDrag] = useState(false);
+    const [previewUrl, setPreviewUrl] = useState(null);
+
+    React.useEffect(() => {
+        if (!file) {
+            setPreviewUrl(null);
+            return;
+        }
+        const url = URL.createObjectURL(file);
+        setPreviewUrl(url);
+        return () => URL.revokeObjectURL(url);
+    }, [file]);
 
     const handleDrop = (e) => {
         e.preventDefault();
         setDrag(false);
         const f = e.dataTransfer.files[0];
-        if (f && f.type.startsWith('video/')) onFile(f);
+        if (f && (f.type.startsWith('image/') || f.type.startsWith('video/'))) onFile(f);
     };
 
     return (
@@ -110,15 +125,21 @@ const LaneUploadSlot = ({ lane, file, onFile, onRemove }) => {
                     <div style={{ fontSize: '1.6rem' }}>{lane.icon}</div>
                     <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#e2e8f0', textAlign: 'center' }}>{lane.label}</div>
                     <div style={{ fontSize: '0.65rem', color: '#64748b', textAlign: 'center', lineHeight: 1.4 }}>
-                        Drop video<br />or click to browse
+                        Drop image/video<br />or click to browse
                     </div>
                     <div style={{ fontSize: '0.6rem', color: '#475569', background: 'rgba(255,255,255,0.04)', padding: '3px 8px', borderRadius: '5px', border: '1px solid rgba(255,255,255,0.06)' }}>
-                        MP4 · AVI · MOV
+                        JPG · PNG · MP4
                     </div>
                 </>
             ) : (
                 <>
-                    <div style={{ fontSize: '1.4rem' }}>🎥</div>
+                    <div style={{ width: '100%', height: '50px', display: 'flex', justifyContent: 'center', marginBottom: '4px' }}>
+                        {file.type.startsWith('image/') ? (
+                            <img src={previewUrl} alt="preview" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '4px' }} />
+                        ) : (
+                            <video src={previewUrl} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '4px' }} />
+                        )}
+                    </div>
                     <div style={{ fontSize: '0.72rem', fontWeight: 700, color: lane.color, textAlign: 'center', wordBreak: 'break-word', maxWidth: '100%', padding: '0 6px' }}
                         title={file.name}>
                         {file.name.length > 20 ? file.name.slice(0, 18) + '…' : file.name}
@@ -139,7 +160,7 @@ const LaneUploadSlot = ({ lane, file, onFile, onRemove }) => {
             <input
                 ref={inputRef}
                 type="file"
-                accept="video/*"
+                accept="image/*,video/*"
                 style={{ display: 'none' }}
                 onChange={(e) => onFile(e.target.files[0])}
             />
@@ -179,7 +200,10 @@ const VideoUpload = ({ onDetectionComplete }) => {
         setYoloProgress(0);
 
         const filesToUpload = LANES.filter((l) => files[l.id]);
-        const perFileShare = 100 / filesToUpload.length;
+        const uploadedCount = filesToUpload.length;
+        const isMultiFeed = uploadedCount > 1;
+
+        const perFileShare = 100 / uploadedCount;
         let cumulative = 0;
         const jobIds = [];
         const results = [];
@@ -188,9 +212,11 @@ const VideoUpload = ({ onDetectionComplete }) => {
             /* ── Step 1: Upload all selected files ─────────────────────── */
             for (const lane of filesToUpload) {
                 const file = files[lane.id];
+                // If multiple distinct cameras are uploaded, map the whole feed to its specific lane box.
+                const assignedLane = isMultiFeed ? lane.label : null;
                 const result = await uploadVideo(file, (pct) => {
                     setUploadProgress(Math.round(cumulative + pct * perFileShare / 100));
-                });
+                }, assignedLane);
                 results.push({ lane: lane.label, ...result });
                 jobIds.push(result.jobId);
                 cumulative += perFileShare;
@@ -209,10 +235,10 @@ const VideoUpload = ({ onDetectionComplete }) => {
             let totalVehicles = 0;
             let totalFrames = 0;
             let totalProcessingTime = 0;
+            let outputs = [];
 
             for (let i = 0; i < jobIds.length; i++) {
                 const jobId = jobIds[i];
-                const laneInfo = filesToUpload[i];
 
                 const res = await pollJobUntilDone(jobId, (pct) => {
                     // Weight progress across jobs
@@ -225,14 +251,36 @@ const VideoUpload = ({ onDetectionComplete }) => {
                     mergedLaneDetails = [...mergedLaneDetails, ...res.laneDetails];
                 }
                 if (res.signalAllocation?.length) {
-                    mergedSignalAlloc = res.signalAllocation; // use last (most complete)
+                    mergedSignalAlloc = res.signalAllocation; // use last or merge
                 }
                 if (res.laneCounts) {
                     mergedLaneCounts = { ...mergedLaneCounts, ...res.laneCounts };
                 }
+                if (res.output) {
+                    outputs.push(res.output);
+                }
                 totalVehicles += res.totalVehicles ?? 0;
                 totalFrames += res.frameCount ?? 0;
                 totalProcessingTime += res.processingTime ?? 0;
+            }
+
+            // ── Recompute explicit Signal Allocation for multiple mapped lanes ──
+            if (isMultiFeed || mergedSignalAlloc.length === 0) {
+                const minGreen = 15;
+                const maxGreen = 60;
+                const total = Math.max(1, Object.values(mergedLaneCounts).reduce((a, b) => a + b, 0));
+                mergedSignalAlloc = Object.entries(mergedLaneCounts).map(([lane, count], idx) => {
+                    const ratio = count / total;
+                    const green = Math.round(minGreen + ratio * (maxGreen - minGreen));
+                    return {
+                        lane: `${lane} Lane`,
+                        phase: count > 0 && idx === 0 ? 'GREEN' : 'RED',
+                        priority: count > 15 ? 'High' : count > 5 ? 'Medium' : 'Low',
+                        greenTime: green,
+                        vehicleCount: count,
+                        nextChange: idx === 0 ? green : 0,
+                    };
+                });
             }
 
             /* If only one video was uploaded for *two* real lanes,
@@ -241,6 +289,7 @@ const VideoUpload = ({ onDetectionComplete }) => {
                 laneDetails: mergedLaneDetails,
                 signalAllocation: mergedSignalAlloc,
                 laneCounts: mergedLaneCounts,
+                outputs,
                 totalVehicles,
                 totalFrames,
                 processingTime: Math.round(totalProcessingTime * 10) / 10,
@@ -288,7 +337,7 @@ const VideoUpload = ({ onDetectionComplete }) => {
                 <div className="section-header-icon" style={{ background: 'linear-gradient(135deg, #3b82f620, #6366f130)' }}>📹</div>
                 <div>
                     <div className="section-title">Camera Feed Upload</div>
-                    <div className="section-subtitle">Upload video → YOLOv8 counts vehicles → updates dashboard</div>
+                    <div className="section-subtitle">Upload image/video → YOLOv8 counts vehicles → updates dashboard</div>
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
                     {phase === 'done' && (
@@ -317,10 +366,8 @@ const VideoUpload = ({ onDetectionComplete }) => {
                 <span style={{ fontSize: '1rem', marginTop: '1px' }}>ℹ️</span>
                 <div style={{ fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.6 }}>
                     <strong style={{ color: '#93c5fd' }}>How it works:</strong>{' '}
-                    Upload 1–4 video feeds. YOLOv8 detects vehicles in each video, splits the frame into 4 lane ROIs,
-                    counts vehicles per lane, and updates the <strong style={{ color: '#e2e8f0' }}>Lane Density</strong> and{' '}
-                    <strong style={{ color: '#e2e8f0' }}>Signal Allocation</strong> panels with real data.
-                    For a 2-lane video, the two active lanes will reflect real counts.
+                    Upload 1–4 image or video feeds. <strong style={{ color: '#e2e8f0' }}>Single feed: </strong> splits the frame into 4 lane ROIs. <strong style={{ color: '#e2e8f0' }}>Multiple feeds: </strong> processes the entire frame specifically for its assigned lane.
+                    Updates the <strong style={{ color: '#e2e8f0' }}>Density</strong> and <strong style={{ color: '#e2e8f0' }}>Signal</strong> panels with real detected YOLO data.
                 </div>
             </div>
 
@@ -392,7 +439,7 @@ const VideoUpload = ({ onDetectionComplete }) => {
                         >
                             📤 Bulk Upload
                         </button>
-                        <input ref={allInputRef} type="file" accept="video/*" multiple style={{ display: 'none' }} onChange={(e) => handleBulkInput(e.target.files)} />
+                        <input ref={allInputRef} type="file" accept="image/*,video/*" multiple style={{ display: 'none' }} onChange={(e) => handleBulkInput(e.target.files)} />
                     </>
                 )}
                 {(phase === 'done' || phase === 'error') && (
@@ -400,7 +447,7 @@ const VideoUpload = ({ onDetectionComplete }) => {
                         onClick={handleReset}
                         style={{ flex: 1, padding: '10px 20px', background: 'rgba(255,255,255,0.05)', color: '#94a3b8', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 600 }}
                     >
-                        🔄 Reset & Upload New Video
+                        🔄 Reset & Upload New Media
                     </button>
                 )}
                 {(phase === 'uploading' || phase === 'analysing') && (
@@ -438,6 +485,9 @@ const DetectionSummary = ({ result, uploadResults }) => {
         'West Lane': '#f59e0b',
     };
 
+    // Flask serves static files from the root, not under /api
+    const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api\/?$/, '');
+
     return (
         <div style={{ margin: '12px 0', padding: '16px', background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.15)', borderRadius: '12px' }}>
             <div style={{ fontSize: '0.7rem', color: '#10b981', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
@@ -457,6 +507,26 @@ const DetectionSummary = ({ result, uploadResults }) => {
                     );
                 })}
             </div>
+
+            {/* Render Annotated Images */}
+            {result.outputs && result.outputs.length > 0 && (
+                <div style={{ marginBottom: '12px' }}>
+                    <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        📸 Annotated Frames
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(result.outputs.length, 2)}, 1fr)`, gap: '8px' }}>
+                        {result.outputs.map((imgUrl, idx) => (
+                            <div key={idx} style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(16,185,129,0.2)' }}>
+                                <img
+                                    src={`${baseUrl}${imgUrl}`}
+                                    alt={`Annotated output ${idx + 1}`}
+                                    style={{ width: '100%', height: 'auto', display: 'block' }}
+                                />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Summary stats */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>

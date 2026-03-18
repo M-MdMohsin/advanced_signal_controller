@@ -16,11 +16,12 @@ Workflow:
 Public API
 ----------
   detect_vehicles(video_path, job_store, job_id)
-      Blocking call — meant to run in a background thread.
-      Writes progress + results back into job_store[job_id].
+  detect_image(image_path, job_store, job_id)
+      Processes a single image, saves it to static folder, and updates job_store.
 """
 
 import os
+import uuid
 import cv2
 import time
 import threading
@@ -55,6 +56,9 @@ CONFIDENCE_THRESHOLD = float(os.environ.get("CONF_THRESHOLD", "0.35"))
 
 # Lane names in the order they are laid out left-to-right in the ROI split
 LANE_NAMES = ["North", "South", "East", "West"]
+
+# Fixed ID mapping ensuring React component keys never duplicate during merged responses
+LANE_ID_MAP = {name: i for i, name in enumerate(LANE_NAMES, start=1)}
 
 # ── Lazy model loader (thread-safe singleton) ─────────────────────────────────
 _model = None
@@ -145,7 +149,7 @@ def _annotate_frame(frame: np.ndarray, detections: list, rois: list[dict]) -> np
 
 # ── Main detection function ───────────────────────────────────────────────────
 
-def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
+def detect_vehicles(video_path: str, job_store: dict, job_id: str, target_lane: str = None) -> None:
     """
     Analyse *video_path* with YOLOv8, populate *job_store[job_id]* with:
 
@@ -177,13 +181,21 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
     frame_h        = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps            = cap.get(cv2.CAP_PROP_FPS) or 30
 
-    rois = _build_lane_rois(frame_w, frame_h)
+    if target_lane:
+        lane_str = target_lane.replace(" Lane", "")
+        # If explicitly assigned to one lane (multi-feed upload), treat whole frame as that lane.
+        rois = [{"name": lane_str, "x1": 0, "y1": 0, "x2": frame_w, "y2": frame_h}]
+    else:
+        # If single feed uploaded, keep original 4-way split logic.
+        rois = _build_lane_rois(frame_w, frame_h)
+
+    active_lanes = [r["name"] for r in rois]
 
     # ── Accumulators ─────────────────────────────────────────────────────────
     # peak count per lane across all sampled frames
-    peak_counts:  dict[str, int] = {n: 0 for n in LANE_NAMES}
+    peak_counts:  dict[str, int] = {n: 0 for n in active_lanes}
     # running sum + sample count for average (kept for future use)
-    sum_counts:   dict[str, int] = {n: 0 for n in LANE_NAMES}
+    sum_counts:   dict[str, int] = {n: 0 for n in active_lanes}
     frames_sampled = 0
 
     # Store up to 5 annotated "key frame" snapshots (as base64 JPEG)
@@ -206,10 +218,13 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
         if frame_idx % FRAME_SAMPLE_RATE != 0:
             continue
 
+        # Resize frame to 640x480 for faster inference
+        frame = cv2.resize(frame, (640, 480))
+
         # ── Run YOLO inference ────────────────────────────────────────────────
         results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
         detections = []
-        frame_lane_counts: dict[str, int] = {n: 0 for n in LANE_NAMES}
+        frame_lane_counts: dict[str, int] = {n: 0 for n in active_lanes}
 
         for result in results:
             boxes = result.boxes
@@ -234,7 +249,7 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
                     })
 
         # Update peak + sum
-        for name in LANE_NAMES:
+        for name in active_lanes:
             c = frame_lane_counts[name]
             peak_counts[name] = max(peak_counts[name], c)
             sum_counts[name]  += c
@@ -266,7 +281,7 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
     total_vehicles  = sum(peak_counts.values()) or 1
     lane_details    = []
 
-    for i, name in enumerate(LANE_NAMES, start=1):
+    for name in active_lanes:
         count   = peak_counts[name]
         density = min(round(count / 0.65, 1), 100.0)
         meta    = _classify(density)
@@ -274,7 +289,7 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
         _prev_densities[name] = density
 
         lane_details.append({
-            "id":           i,
+            "id":           LANE_ID_MAP.get(name, 1),
             "name":         f"{name} Lane",
             "lane":         name,
             "vehicleCount": count,
@@ -285,23 +300,129 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str) -> None:
 
     elapsed = round(time.time() - start_ts, 2)
 
-    # ── Write results back into job_store ─────────────────────────────────────
     job_store[job_id].update({
         "status":          "completed",
         "progress":        100,
+        "type":            "video",
+        "message":         "Video processed",
         "laneCounts":      peak_counts,
         "laneDetails":     lane_details,
         "totalVehicles":   sum(peak_counts.values()),
         "frameCount":      frames_sampled,
         "processingTime":  elapsed,
+        "signal":          max(peak_counts, key=peak_counts.get) if any(peak_counts.values()) else "North",
         "annotatedFrames": key_frames_b64,
         "frameIndices":    key_frame_indices,
         "videoMeta": {
-            "width":  frame_w,
-            "height": frame_h,
+            "width":  640,
+            "height": 480,
             "fps":    round(fps, 2),
             "totalFrames": total_frames,
         },
+    })
+
+
+def detect_image(image_path: str, job_store: dict, job_id: str, target_lane: str = None) -> None:
+    """
+    Analyse a single image with YOLOv8.
+    Draws bounding boxes and saves the processed image to the /static folder.
+    Populates job_store[job_id] with image results.
+    """
+    start_ts = time.time()
+
+    if not YOLO_AVAILABLE:
+        _fail(job_store, job_id, "ultralytics package not installed.")
+        return
+
+    frame = cv2.imread(image_path)
+    if frame is None:
+        _fail(job_store, job_id, f"Cannot open image: {image_path}")
+        return
+
+    # Resize image to 640x480 before YOLO
+    frame = cv2.resize(frame, (640, 480))
+
+    frame_h, frame_w = frame.shape[:2]
+
+    if target_lane:
+        lane_str = target_lane.replace(" Lane", "")
+        # If explicitly assigned to one lane, treat whole frame as that lane.
+        rois = [{"name": lane_str, "x1": 0, "y1": 0, "x2": frame_w, "y2": frame_h}]
+    else:
+        # If single feed uploaded, keep original 4-way split logic.
+        rois = _build_lane_rois(frame_w, frame_h)
+
+    active_lanes = [r["name"] for r in rois]
+    model = _get_model()
+
+    results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
+    detections = []
+    lane_counts: dict[str, int] = {n: 0 for n in active_lanes}
+
+    for result in results:
+        boxes = result.boxes
+        if boxes is None:
+            continue
+        for box in boxes:
+            cls_id = int(box.cls[0].item())
+            if cls_id not in VEHICLE_CLASSES:
+                continue
+
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            cx = (x1 + x2) // 2
+            lane = _assign_to_lane(cx, rois)
+
+            if lane:
+                lane_counts[lane] += 1
+                detections.append({
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "class": VEHICLE_CLASSES[cls_id],
+                    "conf":  round(float(box.conf[0].item()), 3),
+                    "lane":  lane,
+                })
+
+    annotated = _annotate_frame(frame, detections, rois)
+
+    # Save to static folder
+    static_dir = os.path.join(os.path.dirname(__file__), "static", "images")
+    os.makedirs(static_dir, exist_ok=True)
+    filename = f"detected_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+    out_path = os.path.join(static_dir, filename)
+    cv2.imwrite(out_path, annotated)
+
+    elapsed = round(time.time() - start_ts, 2)
+
+    # ── Build lane detail records (matches density API shape) ─────────────────
+    from density_generator import _classify, _trend, _prev_densities  # type: ignore
+    lane_details = []
+
+    for name in active_lanes:
+        count   = lane_counts[name]
+        density = min(round(count / 0.65, 1), 100.0)
+        meta    = _classify(density)
+        trend   = _trend(_prev_densities.get(name), density)
+        _prev_densities[name] = density
+
+        lane_details.append({
+            "id":           LANE_ID_MAP.get(name, 1),
+            "name":         f"{name} Lane",
+            "lane":         name,
+            "vehicleCount": count,
+            "density":      density,
+            "trend":        trend,
+            **meta,
+        })
+
+    job_store[job_id].update({
+        "status":   "completed",
+        "progress": 100,
+        "type":     "image",
+        "message":  "Image processed successfully",
+        "output":   f"/static/images/{filename}",
+        "laneCounts": lane_counts,
+        "laneDetails": lane_details,
+        "totalVehicles": sum(lane_counts.values()),
+        "processingTime": elapsed,
     })
 
 

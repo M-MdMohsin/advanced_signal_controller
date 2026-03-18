@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { signalAllocationData } from '../data/dummyData';
 
 const phaseConfig = {
@@ -22,7 +22,60 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
     const [mode, setMode] = useState('AI Adaptive');
     const modes = ['AI Adaptive', 'Fixed Cycle', 'Manual', 'Emergency'];
 
-    const signals = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
+    const [signals, setSignals] = useState([]);
+
+    // 1. Sync incoming data
+    useEffect(() => {
+        const data = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
+        const freshSignals = JSON.parse(JSON.stringify(data));
+
+        // Ensure at least one signal is explicitly GREEN to start the cycle
+        if (freshSignals.length > 0 && !freshSignals.some(s => s.phase === 'GREEN')) {
+            freshSignals[0].phase = 'GREEN';
+            freshSignals[0].nextChange = freshSignals[0].greenTime || 30;
+        }
+        setSignals(freshSignals);
+    }, [liveData]);
+
+    // 2. Real-time cycle countdown interval
+    useEffect(() => {
+        if (signals.length === 0) return;
+
+        const timer = setInterval(() => {
+            setSignals(prev => {
+                if (prev.length === 0) return prev;
+                const nextState = prev.map(s => ({ ...s }));
+                let greenIdx = nextState.findIndex(s => s.phase === 'GREEN');
+
+                if (greenIdx === -1) {
+                    greenIdx = 0;
+                    nextState[0].phase = 'GREEN';
+                }
+
+                nextState[greenIdx].nextChange = Math.max(0, nextState[greenIdx].nextChange - 1);
+
+                // Phase transition
+                if (nextState[greenIdx].nextChange === 0) {
+                    nextState[greenIdx].phase = 'RED';
+                    greenIdx = (greenIdx + 1) % nextState.length;
+                    nextState[greenIdx].phase = 'GREEN';
+                    nextState[greenIdx].nextChange = Math.max(1, nextState[greenIdx].greenTime || 30);
+                }
+
+                // Cascade wait times for RED lights
+                let accumulatedWait = nextState[greenIdx].nextChange;
+                for (let i = 1; i < nextState.length; i++) {
+                    const idx = (greenIdx + i) % nextState.length;
+                    nextState[idx].nextChange = accumulatedWait;
+                    accumulatedWait += (nextState[idx].greenTime || 30);
+                }
+
+                return nextState;
+            });
+        }, 1000);
+
+        return () => clearInterval(timer);
+    }, [signals.length]); // bind only once per array shape
 
     // Total cycle = sum of all green times
     const cycleLen = signals.reduce((s, sig) => s + (sig.greenTime ?? 0), 0) || 155;

@@ -28,7 +28,9 @@ video_bp = Blueprint("video", __name__)
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm", "flv"}
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
+VIDEO_EXTENSIONS = {"mp4", "mkv", "flv", "avi", "mov", "webm"}
+ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 # Shared in-memory job store  { job_id: { ...metadata + results... } }
 _jobs: dict = {}
@@ -38,7 +40,7 @@ def _allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def _run_detection(video_path: str, job_id: str) -> None:
+def _run_detection(video_path: str, job_id: str, lane: str = None) -> None:
     """
     Background worker: imports and calls the YOLO detector.
     Isolated in its own function so import errors surface cleanly.
@@ -51,7 +53,7 @@ def _run_detection(video_path: str, job_id: str) -> None:
             sys.path.insert(0, backend_root)
 
         from yolo_detector import detect_vehicles
-        detect_vehicles(video_path, _jobs, job_id)
+        detect_vehicles(video_path, _jobs, job_id, target_lane=lane)
 
     except Exception as exc:
         _jobs[job_id].update({
@@ -59,6 +61,54 @@ def _run_detection(video_path: str, job_id: str) -> None:
             "error":    str(exc),
             "progress": 0,
         })
+
+
+def _run_image_detection(image_path: str, job_id: str, lane: str = None) -> None:
+    """
+    Background worker: imports and calls the YOLO detector for images.
+    """
+    try:
+        import sys
+        backend_root = os.path.dirname(os.path.dirname(__file__))
+        if backend_root not in sys.path:
+            sys.path.insert(0, backend_root)
+
+        from yolo_detector import detect_image
+        detect_image(image_path, _jobs, job_id, target_lane=lane)
+
+    except Exception as exc:
+        _jobs[job_id].update({
+            "status":   "error",
+            "error":    str(exc),
+            "progress": 0,
+        })
+
+
+def process_video(save_path: str, job_id: str, lane: str = None) -> None:
+    """
+    Background worker for video processing.
+    """
+    t = threading.Thread(
+        target=_run_detection,
+        args=(save_path, job_id, lane),
+        daemon=True,
+        name=f"yolo-video-{job_id[:8]}",
+    )
+    t.start()
+
+
+def process_image(save_path: str, job_id: str, lane: str = None) -> None:
+    """
+    Background worker for image processing.
+    Delegates to YOLO detector detect_image.
+    """
+    t = threading.Thread(
+        target=_run_image_detection,
+        args=(save_path, job_id, lane),
+        daemon=True,
+        name=f"yolo-image-{job_id[:8]}",
+    )
+    t.start()
 
 
 @video_bp.route("/upload", methods=["POST"])
@@ -79,6 +129,19 @@ def upload_video():
         return jsonify({"success": False, "error": "No file selected."}), 400
 
     if not _allowed_file(file.filename):
+        return jsonify({
+            "success": False,
+            "error": f"Unsupported format. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+        }), 415
+
+    ext = file.filename.rsplit(".", 1)[1].lower()
+    mimetype = file.mimetype
+    lane = request.form.get("lane")
+
+    is_image = mimetype.startswith('image') or ext in IMAGE_EXTENSIONS
+    is_video = mimetype.startswith('video') or ext in VIDEO_EXTENSIONS
+
+    if not is_image and not is_video:
         return jsonify({
             "success": False,
             "error": f"Unsupported format. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
@@ -109,14 +172,13 @@ def upload_video():
         "error":           None,
     }
 
-    # ── Launch YOLO in background thread ──────────────────────────────────────
-    t = threading.Thread(
-        target=_run_detection,
-        args=(save_path, job_id),
-        daemon=True,
-        name=f"yolo-{job_id[:8]}",
-    )
-    t.start()
+    # ── Launch YOLO in background thread based on type ────────────────────────
+    if is_image:
+        process_image(save_path, job_id, lane)
+    else:  # is_video
+        process_video(save_path, job_id, lane)
+
+    file_type_str = "Image" if is_image else "Video"
 
     return jsonify({
         "success":      True,
@@ -125,7 +187,7 @@ def upload_video():
         "originalName": filename,
         "sizeMb":       file_size_mb,
         "uploadedAt":   _jobs[job_id]["uploadedAt"],
-        "message":      "Video uploaded. YOLOv8 detection started in background.",
+        "message":      f"{file_type_str} uploaded. YOLOv8 detection started in background.",
         "statusUrl":    f"/api/video/status/{job_id}",
     }), 201
 
@@ -163,6 +225,10 @@ def video_status(job_id: str):
 
     if job["status"] == "completed":
         payload.update({
+            "type":            job.get("type"),
+            "message":         job.get("message"),
+            "output":          job.get("output"),
+            "signal":          job.get("signal"),
             "laneCounts":      job.get("laneCounts"),
             "laneDetails":     job.get("laneDetails"),
             "totalVehicles":   job.get("totalVehicles"),

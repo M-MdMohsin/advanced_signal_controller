@@ -46,10 +46,13 @@ export const getManualAllocation = (laneCounts) =>
 export const getSignalConfig = () => request("/signals/config");
 
 // ── Video Upload ───────────────────────────────────────────────────────────
-export const uploadVideo = (file, onProgress) => {
+export const uploadVideo = (file, onProgress, laneName) => {
     return new Promise((resolve, reject) => {
         const formData = new FormData();
         formData.append("video", file);
+        if (laneName) {
+            formData.append("lane", laneName);
+        }
 
         const xhr = new XMLHttpRequest();
 
