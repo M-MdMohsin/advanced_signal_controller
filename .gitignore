@@ -32,3 +32,4 @@ dist-ssr
 backend/uploads/
 backend/static/
 src/static/
+.env

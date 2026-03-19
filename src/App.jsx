@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Routes, Route } from 'react-router-dom';
+
+import Home from './pages/Home';
 import Header from './components/Header';
 import VideoUpload from './components/VideoUpload';
 import LaneDensityCards from './components/LaneDensityCards';
 import SignalAllocation from './components/SignalAllocation';
+import IntersectionSignals from './components/IntersectionSignals';
 import DensityChart from './components/DensityChart';
 import EmergencyVehicle from './components/EmergencyVehicle';
 import LicensePlate from './components/LicensePlate';
@@ -21,7 +25,6 @@ const TopStatBar = ({ stats, videoStats }) => {
     { label: 'AI Model Uptime', value: '—', icon: '🤖', color: '#8b5cf6' },
   ];
 
-  // If we have video detection results, override vehicles stat
   let display = (stats && stats.length) ? [...stats] : [...defaultStats];
   if (videoStats) {
     display = display.map((s) =>
@@ -59,8 +62,8 @@ const TopStatBar = ({ stats, videoStats }) => {
 const ApiStatusBadge = ({ status }) => {
   const cfg = {
     connected: { color: '#10b981', label: 'API Connected' },
-    error: { color: '#ef4444', label: 'API Offline — using local data' },
-    loading: { color: '#f59e0b', label: 'Connecting…' },
+    error:     { color: '#ef4444', label: 'API Offline — using local data' },
+    loading:   { color: '#f59e0b', label: 'Connecting…' },
   }[status] || { color: '#64748b', label: 'Unknown' };
 
   return (
@@ -88,23 +91,18 @@ const ApiStatusBadge = ({ status }) => {
   );
 };
 
-// ── Main App ──────────────────────────────────────────────────────────────────
-const App = () => {
+// ── Dashboard (unchanged logic) ───────────────────────────────────────────────
+const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [apiStatus, setApiStatus] = useState('loading');
   const [dashData, setDashData] = useState(null);
-
-  // ── Detection results from uploaded video (real YOLO data) ────────────────
-  // When set, these override the random dashboard data for density & signals.
   const [detectionData, setDetectionData] = useState(null);
-  // detectionData shape:
-  //   { laneDetails, signalAllocation, laneCounts, totalVehicles, fromVideo: true }
 
   const tabs = [
-    { id: 'overview', label: '🗺 Overview' },
-    { id: 'analytics', label: '📊 Analytics' },
+    { id: 'overview',   label: '🗺 Overview'  },
+    { id: 'analytics',  label: '📊 Analytics' },
     { id: 'violations', label: '⚠️ Violations' },
-    { id: 'emergency', label: '🚨 Emergency' },
+    { id: 'emergency',  label: '🚨 Emergency' },
   ];
 
   const fetchDashboard = useCallback(async () => {
@@ -123,22 +121,16 @@ const App = () => {
     return () => clearInterval(interval);
   }, [fetchDashboard]);
 
-  /* ── Called by VideoUpload when YOLO analysis completes ─────────────────
-     results = { laneDetails, signalAllocation, totalVehicles, fromVideo }  */
   const handleDetectionComplete = useCallback((results) => {
     setDetectionData(results);
-    // Optionally: if no backend signal allocation came back, keep dashboard's
   }, []);
 
-  // ── Decide which data to show ─────────────────────────────────────────────
-  // Priority: video detection > live dashboard API > dummy fallback (in components)
-  const laneDensityData = detectionData?.laneDetails ?? dashData?.laneDensity;
-  const signalData = detectionData?.signalAllocation ?? dashData?.signalAllocation;
-  const fromVideo = !!detectionData?.fromVideo;
+  const laneDensityData = detectionData?.laneDetails    ?? dashData?.laneDensity;
+  const signalData      = detectionData?.signalAllocation ?? dashData?.signalAllocation;
+  const fromVideo       = !!detectionData?.fromVideo;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--color-bg-primary)' }}>
-      {/* Google Font */}
       <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
         rel="stylesheet"
@@ -148,7 +140,7 @@ const App = () => {
 
       <main style={{ maxWidth: '1600px', margin: '0 auto', padding: '28px 24px 48px' }}>
 
-        {/* ── Video-detection banner (shown after upload completes) ── */}
+        {/* Video-detection banner */}
         {fromVideo && (
           <div style={{
             display: 'flex', alignItems: 'center', gap: '12px',
@@ -209,10 +201,15 @@ const App = () => {
         {activeTab === 'overview' && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '20px', marginBottom: '20px' }}>
-              {/* VideoUpload now receives onDetectionComplete callback */}
               <VideoUpload onDetectionComplete={handleDetectionComplete} />
               <SignalAllocation liveData={signalData} fromVideo={fromVideo} />
             </div>
+
+            {/* ── 4-Signal Intersection Cards ── */}
+            <div style={{ marginBottom: '20px' }}>
+              <IntersectionSignals liveData={signalData} fromVideo={fromVideo} />
+            </div>
+
             <div style={{ marginBottom: '20px' }}>
               <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
             </div>
@@ -226,6 +223,9 @@ const App = () => {
         {/* ── ANALYTICS TAB ── */}
         {activeTab === 'analytics' && (
           <>
+            <div style={{ marginBottom: '20px' }}>
+              <IntersectionSignals liveData={signalData} fromVideo={fromVideo} />
+            </div>
             <div style={{ marginBottom: '20px' }}>
               <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
             </div>
@@ -250,7 +250,6 @@ const App = () => {
         )}
       </main>
 
-      {/* Footer */}
       <footer style={{ borderTop: '1px solid rgba(255,255,255,0.05)', padding: '20px 24px', textAlign: 'center' }}>
         <p style={{ margin: 0, color: '#334155', fontSize: '0.75rem' }}>
           AI Traffic Signal Management System · ATMS v2.4 · Backend: Flask + YOLOv8 · Formula: GreenTime = MIN + (count/total) × (MAX − MIN)
@@ -260,13 +259,21 @@ const App = () => {
       <ApiStatusBadge status={apiStatus} />
 
       <style>{`
-                @keyframes pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.4; }
-                }
-            `}</style>
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   );
 };
+
+// ── Root App — only routing, no logic ────────────────────────────────────────
+const App = () => (
+  <Routes>
+    <Route path="/"          element={<Home />} />
+    <Route path="/dashboard" element={<Dashboard />} />
+  </Routes>
+);
 
 export default App;
