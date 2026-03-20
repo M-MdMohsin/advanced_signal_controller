@@ -16,6 +16,9 @@ const DENSITY_CFG = {
   Low:    { color: '#10b981', bg: 'rgba(16,185,129,0.12)'  },
 };
 
+// Yellow phase duration in seconds (shown just before RED)
+const YELLOW_SECS = 3;
+
 // Map vehicle-count → density label
 const countToDensity = (count) => {
   if (count == null) return 'Medium';
@@ -24,7 +27,7 @@ const countToDensity = (count) => {
   return 'Low';
 };
 
-// Tiny traffic-light SVG
+// ── Realistic 3-bulb traffic light SVG ────────────────────────────────────────
 const MiniLight = ({ phase }) => {
   const isGreen  = phase === 'GREEN';
   const isYellow = phase === 'YELLOW';
@@ -32,12 +35,18 @@ const MiniLight = ({ phase }) => {
   return (
     <svg width="28" height="68" viewBox="0 0 28 68">
       <rect x="2" y="2" width="24" height="64" rx="8" fill="#111827" stroke="rgba(255,255,255,0.07)" strokeWidth="1" />
+      {/* Red bulb */}
       <circle cx="14" cy="15" r="7" fill={isRed    ? '#ef4444' : '#1a1a2e'}
-        style={{ filter: isRed    ? 'drop-shadow(0 0 6px #ef4444)' : 'none' }} />
+        style={{ filter: isRed    ? 'drop-shadow(0 0 6px #ef4444)' : 'none',
+                 transition: 'fill 0.3s ease, filter 0.3s ease' }} />
+      {/* Yellow bulb */}
       <circle cx="14" cy="34" r="7" fill={isYellow ? '#f59e0b' : '#1a1a2e'}
-        style={{ filter: isYellow ? 'drop-shadow(0 0 6px #f59e0b)' : 'none' }} />
+        style={{ filter: isYellow ? 'drop-shadow(0 0 6px #f59e0b)' : 'none',
+                 transition: 'fill 0.3s ease, filter 0.3s ease' }} />
+      {/* Green bulb */}
       <circle cx="14" cy="53" r="7" fill={isGreen  ? '#10b981' : '#1a1a2e'}
-        style={{ filter: isGreen  ? 'drop-shadow(0 0 8px #10b981)' : 'none' }} />
+        style={{ filter: isGreen  ? 'drop-shadow(0 0 8px #10b981)' : 'none',
+                 transition: 'fill 0.3s ease, filter 0.3s ease' }} />
     </svg>
   );
 };
@@ -48,6 +57,11 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
   const dn = DENSITY_CFG[density] ?? DENSITY_CFG.Medium;
 
   const dirIcons = { North: '↑', South: '↓', East: '→', West: '←' };
+
+  // Pulse animation on yellow
+  const yellowPulse = phase === 'YELLOW'
+    ? { animation: 'yellowBlink 0.6s ease-in-out infinite' }
+    : {};
 
   return (
     <div style={{
@@ -67,6 +81,7 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
         width: 80, height: 80,
         background: `radial-gradient(circle, ${ph.glow} 0%, transparent 70%)`,
         borderRadius: '50%', pointerEvents: 'none',
+        ...yellowPulse,
       }} />
 
       {/* Header row */}
@@ -91,6 +106,7 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
           background: ph.bg, color: ph.color,
           border: `1px solid ${ph.border}`,
           textTransform: 'uppercase',
+          transition: 'all 0.3s ease',
         }}>
           {ph.label}
         </span>
@@ -107,12 +123,17 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
             color: ph.color,
             fontVariantNumeric: 'tabular-nums',
             textShadow: `0 0 20px ${ph.glow}`,
+            transition: 'color 0.3s ease',
           }}>
             {String(timer).padStart(2, '0')}
             <span style={{ fontSize: '1rem', fontWeight: 500, color: '#64748b', marginLeft: '4px' }}>s</span>
           </div>
           <div style={{ fontSize: '0.68rem', color: '#475569', marginTop: '4px' }}>
-            {phase === 'GREEN' ? 'Time remaining' : 'Wait time'}
+            {phase === 'GREEN'
+              ? 'Time remaining'
+              : phase === 'YELLOW'
+                ? '⚠️ Clearing — Stop now'
+                : 'Wait time'}
           </div>
         </div>
       </div>
@@ -137,12 +158,10 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
 };
 
 // ── Main component ─────────────────────────────────────────────────────────────
-// liveData: same shape as SignalAllocation's liveData (array of signal objects)
-// fromVideo: boolean
 const IntersectionSignals = ({ liveData, fromVideo }) => {
   const [signals, setSignals] = useState([]);
 
-  // 1. Build the 4-direction signals from data
+  // 1. Build initial 4-direction signals from data
   useEffect(() => {
     const src = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
     const data = JSON.parse(JSON.stringify(src));
@@ -151,25 +170,20 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
     const mapped = DIRECTIONS.map((dir, i) => {
       const raw = data[i % data.length];
       return {
-        direction: dir,
-        phase:        raw.phase === 'GREEN' && i !== 0 ? 'RED' : (raw.phase ?? 'RED'),
-        timer:        raw.nextChange ?? 30,
+        direction:    dir,
+        phase:        i === 0 ? 'GREEN' : 'RED',   // start with North GREEN
+        timer:        i === 0 ? (raw.nextChange ?? 30) : (raw.nextChange ?? 30) * (i + 1),
         greenTime:    raw.greenTime ?? 30,
         vehicleCount: raw.vehicleCount ?? null,
         density:      countToDensity(raw.vehicleCount),
+        yellowPending: false,     // true when we're doing a yellow flash
       };
     });
-
-    // Make sure exactly one is GREEN
-    if (!mapped.some(s => s.phase === 'GREEN')) {
-      mapped[0].phase = 'GREEN';
-      mapped[0].timer = mapped[0].greenTime;
-    }
 
     setSignals(mapped);
   }, [liveData]);
 
-  // 2. Countdown interval (same logic as SignalAllocation)
+  // 2. Countdown + Yellow-phase transition
   useEffect(() => {
     if (signals.length === 0) return;
 
@@ -177,25 +191,71 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
       setSignals(prev => {
         if (prev.length === 0) return prev;
         const next = prev.map(s => ({ ...s }));
+
         let greenIdx = next.findIndex(s => s.phase === 'GREEN');
-        if (greenIdx === -1) { greenIdx = 0; next[0].phase = 'GREEN'; }
+        let yellowIdx = next.findIndex(s => s.phase === 'YELLOW');
+
+        // ── Handle YELLOW phase countdown ──────────────────────────────────
+        if (yellowIdx !== -1) {
+          next[yellowIdx].timer = Math.max(0, next[yellowIdx].timer - 1);
+
+          if (next[yellowIdx].timer === 0) {
+            // Yellow expired → go RED, next direction goes GREEN
+            next[yellowIdx].phase        = 'RED';
+            next[yellowIdx].yellowPending = false;
+            const nextGreenIdx           = (yellowIdx + 1) % next.length;
+            next[nextGreenIdx].phase     = 'GREEN';
+            next[nextGreenIdx].timer     = Math.max(1, next[nextGreenIdx].greenTime ?? 30);
+            greenIdx                     = nextGreenIdx;
+          }
+
+          // Cascade waits for remaining RED signals
+          let wait = (greenIdx !== -1 ? next[greenIdx].timer : 0) + YELLOW_SECS;
+          for (let i = 1; i < next.length; i++) {
+            const idx = (greenIdx !== -1 ? greenIdx : yellowIdx + 1) + i;
+            const ri  = ((idx % next.length) + next.length) % next.length;
+            if (next[ri].phase === 'RED') {
+              next[ri].timer = wait;
+              wait += (next[ri].greenTime ?? 30);
+            }
+          }
+
+          return next;
+        }
+
+        // ── Handle GREEN phase countdown ────────────────────────────────────
+        if (greenIdx === -1) {
+          greenIdx = 0;
+          next[0].phase = 'GREEN';
+        }
 
         next[greenIdx].timer = Math.max(0, next[greenIdx].timer - 1);
 
-        if (next[greenIdx].timer === 0) {
+        // When GREEN timer hits YELLOW_SECS → switch to YELLOW
+        if (next[greenIdx].timer <= YELLOW_SECS && next[greenIdx].timer > 0) {
+          next[greenIdx].phase = 'YELLOW';
+        } else if (next[greenIdx].timer === 0) {
+          // Fallback if yellow was skipped somehow
           next[greenIdx].phase = 'RED';
-          greenIdx = (greenIdx + 1) % next.length;
-          next[greenIdx].phase  = 'GREEN';
-          next[greenIdx].timer  = Math.max(1, next[greenIdx].greenTime ?? 30);
+          const nextGI = (greenIdx + 1) % next.length;
+          next[nextGI].phase   = 'GREEN';
+          next[nextGI].timer   = Math.max(1, next[nextGI].greenTime ?? 30);
+          greenIdx = nextGI;
         }
 
-        // Cascade wait times for non-green signals
-        let wait = next[greenIdx].timer;
-        for (let i = 1; i < next.length; i++) {
-          const idx = (greenIdx + i) % next.length;
-          if (next[idx].phase !== 'GREEN') {
-            next[idx].timer = wait;
-            wait += (next[idx].greenTime ?? 30);
+        // Cascade wait times for RED signals
+        const activeIdx = next.findIndex(s => s.phase === 'GREEN') === -1
+          ? next.findIndex(s => s.phase === 'YELLOW')
+          : next.findIndex(s => s.phase === 'GREEN');
+
+        if (activeIdx !== -1) {
+          let wait = next[activeIdx].timer + (next[activeIdx].phase === 'GREEN' ? YELLOW_SECS : 0);
+          for (let i = 1; i < next.length; i++) {
+            const ri = (activeIdx + i) % next.length;
+            if (next[ri].phase === 'RED') {
+              next[ri].timer = wait;
+              wait += (next[ri].greenTime ?? 30);
+            }
           }
         }
 
@@ -218,13 +278,33 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
           <div className="section-subtitle">
             {fromVideo
               ? '⚡ Green-times computed from YOLOv8 video analysis'
-              : 'Live N / S / E / W signal states with countdown timers'}
+              : 'Live N / S / E / W — Green → Yellow → Red cycle'}
           </div>
         </div>
         <div className="status-badge status-green" style={{ marginLeft: 'auto' }}>
           <span className="pulse-dot" style={{ background: '#10b981' }} />
           {fromVideo ? 'From Video' : 'Live'}
         </div>
+      </div>
+
+      {/* Phase legend */}
+      <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+        {[
+          { phase: 'GREEN',  label: 'Go',    color: '#10b981', desc: 'Active — vehicles moving' },
+          { phase: 'YELLOW', label: 'Clear', color: '#f59e0b', desc: 'Stopping — last 3 seconds' },
+          { phase: 'RED',    label: 'Stop',  color: '#ef4444', desc: 'Waiting for turn' },
+        ].map(p => (
+          <div key={p.phase} style={{
+            display: 'flex', alignItems: 'center', gap: '6px',
+            padding: '4px 10px', borderRadius: '8px',
+            background: `${p.color}12`, border: `1px solid ${p.color}30`,
+          }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color,
+              boxShadow: `0 0 5px ${p.color}` }} />
+            <span style={{ fontSize: '0.7rem', fontWeight: 700, color: p.color }}>{p.label}</span>
+            <span style={{ fontSize: '0.65rem', color: '#475569' }}>{p.desc}</span>
+          </div>
+        ))}
       </div>
 
       {/* 4 cards */}
@@ -244,6 +324,13 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
           />
         ))}
       </div>
+
+      <style>{`
+        @keyframes yellowBlink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
     </div>
   );
 };
