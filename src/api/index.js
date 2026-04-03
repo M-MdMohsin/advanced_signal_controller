@@ -107,3 +107,11 @@ export const getAnnotatedFrames = (jobId) =>
 export const listVideoJobs = () => request("/video/jobs");
 export const deleteVideoJob = (jobId) =>
     request(`/video/jobs/${jobId}`, { method: "DELETE" });
+
+// ── Auto-detect from lane image folders ────────────────────────────────────
+// Triggers YOLO detection on the next image from each lane folder.
+// Returns: { jobId, lanesQueued, imagesUsed, statusUrl, feederStatus }
+export const triggerAutoDetect = () => request("/video/auto-detect");
+
+// Returns the current state of every lane folder (image list, next index).
+export const getFeederStatus = () => request("/video/feeder-status");

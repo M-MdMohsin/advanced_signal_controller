@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { signalAllocationData } from '../data/dummyData';
 
 const phaseConfig = {
@@ -23,9 +23,14 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
     const modes = ['AI Adaptive', 'Fixed Cycle', 'Manual', 'Emergency'];
 
     const [signals, setSignals] = useState([]);
+    const prevDataRef = useRef(null); // track last JSON to avoid restarting on unchanged polls
 
-    // 1. Sync incoming data
+    // 1. Sync incoming data — only reset cycle when content actually changes
     useEffect(() => {
+        const incoming = JSON.stringify(liveData);
+        if (incoming === prevDataRef.current) return; // same data, keep running cycle
+        prevDataRef.current = incoming;
+
         const data = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
         const freshSignals = JSON.parse(JSON.stringify(data));
 

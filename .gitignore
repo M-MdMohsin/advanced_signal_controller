@@ -33,3 +33,25 @@ backend/uploads/
 backend/static/
 src/static/
 .env
+
+# Lane image folders — ignore actual images, keep folder structure via .gitkeep
+backend/images/north/*.jpg
+backend/images/north/*.jpeg
+backend/images/north/*.png
+backend/images/north/*.bmp
+backend/images/north/*.webp
+backend/images/east/*.jpg
+backend/images/east/*.jpeg
+backend/images/east/*.png
+backend/images/east/*.bmp
+backend/images/east/*.webp
+backend/images/south/*.jpg
+backend/images/south/*.jpeg
+backend/images/south/*.png
+backend/images/south/*.bmp
+backend/images/south/*.webp
+backend/images/west/*.jpg
+backend/images/west/*.jpeg
+backend/images/west/*.png
+backend/images/west/*.bmp
+backend/images/west/*.webp

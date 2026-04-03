@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { signalAllocationData } from '../data/dummyData';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -160,9 +160,14 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
 // ── Main component ─────────────────────────────────────────────────────────────
 const IntersectionSignals = ({ liveData, fromVideo }) => {
   const [signals, setSignals] = useState([]);
+  const prevDataRef = useRef(null); // track last JSON to avoid restarting on unchanged polls
 
-  // 1. Build initial 4-direction signals from data
+  // 1. Build initial 4-direction signals — only reset when content actually changes
   useEffect(() => {
+    const incoming = JSON.stringify(liveData);
+    if (incoming === prevDataRef.current) return; // same data, keep running cycle
+    prevDataRef.current = incoming;
+
     const src = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
     const data = JSON.parse(JSON.stringify(src));
 
@@ -176,7 +181,7 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
         greenTime:    raw.greenTime ?? 30,
         vehicleCount: raw.vehicleCount ?? null,
         density:      countToDensity(raw.vehicleCount),
-        yellowPending: false,     // true when we're doing a yellow flash
+        yellowPending: false,
       };
     });
 
