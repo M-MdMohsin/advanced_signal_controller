@@ -30,6 +30,7 @@ dist-ssr
 *.mkv
 
 backend/uploads/
+backend/images/
 backend/static/
 src/static/
 .env
