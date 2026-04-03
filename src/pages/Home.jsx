@@ -276,9 +276,9 @@ const Home = () => {
           maxWidth: '520px', textAlign: 'center',
           animation: 'fadeInUp 0.5s ease 0.2s both',
         }}>
-          Upload traffic footage and let YOLOv8 analyse vehicle density across
-          all four intersection lanes — then watch the AI optimise green-time
-          with realistic <strong style={{ color: '#e2e8f0' }}>Green → Yellow → Red</strong> signal cycles.
+          Drop traffic images into lane folders and hit <strong style={{ color: '#e2e8f0' }}>Run YOLO Detection</strong> — the AI
+          analyses vehicle density across all four lanes and optimises green-time
+          with realistic <strong style={{ color: '#e2e8f0' }}>Green → Yellow → Red</strong> signal cycles automatically.
         </p>
 
         {/* ── Hero Traffic Lights Row ── */}
@@ -386,7 +386,7 @@ const Home = () => {
           animation: 'fadeInUp 0.6s ease 0.7s both',
         }}>
           {[
-            { icon: '📹', label: 'Video Upload & Detection' },
+            { icon: '🤖', label: 'Auto Image Detection'    },
             { icon: '📊', label: 'Real-time Analytics'     },
             { icon: '🚨', label: 'Emergency Override'       },
             { icon: '🧠', label: 'YOLOv8 AI Engine'        },

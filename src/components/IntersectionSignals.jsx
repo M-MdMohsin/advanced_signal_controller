@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { triggerAutoDetect, getVideoStatus } from '../api/index.js';
 import { signalAllocationData } from '../data/dummyData';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -158,32 +159,100 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
 };
 
 // ── Main component ─────────────────────────────────────────────────────────────
-const IntersectionSignals = ({ liveData, fromVideo }) => {
+const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
   const [signals, setSignals] = useState([]);
+  const prevDataRef     = useRef(null);  // track last JSON to avoid restarting on unchanged polls
+  const bgJobIdRef      = useRef(null);  // background job currently being polled
+  const bgPollRef       = useRef(null);  // setInterval handle for background poll
+  const prevGreenDirRef = useRef(null);  // direction that was green last tick
+  const [bgState, setBgState] = useState('idle'); // 'idle' | 'processing' | 'ready'
 
-  // 1. Build initial 4-direction signals from data
+  // ── Stop background poll ───────────────────────────────────────────────────
+  const stopBgPoll = useCallback(() => {
+    if (bgPollRef.current) { clearInterval(bgPollRef.current); bgPollRef.current = null; }
+  }, []);
+
+  // ── Fire background auto-detect (silent, no UI block) ─────────────────────
+  const triggerBgDetect = useCallback(async () => {
+    if (bgJobIdRef.current) return; // already processing
+    try {
+      setBgState('processing');
+      const res = await triggerAutoDetect();
+      if (!res.success) { setBgState('idle'); return; }
+      bgJobIdRef.current = res.jobId;
+
+      bgPollRef.current = setInterval(async () => {
+        try {
+          const status = await getVideoStatus(bgJobIdRef.current);
+          if (status.status === 'completed') {
+            stopBgPoll();
+            bgJobIdRef.current = null;
+            setBgState('ready');
+            // Deliver new results to parent (App.jsx) so dashboard updates
+            if (status.laneDetails && onNewDetectionResult) {
+              onNewDetectionResult({
+                laneDetails:      status.laneDetails,
+                signalAllocation: status.signal,
+                totalVehicles:    status.totalVehicles,
+                annotatedImages:  status.annotatedImages,
+                laneCounts:       status.laneCounts,
+                fromVideo:        true,
+              });
+            }
+          } else if (status.status === 'error') {
+            stopBgPoll();
+            bgJobIdRef.current = null;
+            setBgState('idle');
+          }
+        } catch { stopBgPoll(); bgJobIdRef.current = null; setBgState('idle'); }
+      }, 1200);
+    } catch { setBgState('idle'); }
+  }, [stopBgPoll, onNewDetectionResult]);
+
+  // Cleanup on unmount
+  useEffect(() => () => stopBgPoll(), [stopBgPoll]);
+
+  // 1. Build initial 4-direction signals — only reset when content actually changes
   useEffect(() => {
+    const incoming = JSON.stringify(liveData);
+    if (incoming === prevDataRef.current) return; // same data, keep running cycle
+    prevDataRef.current = incoming;
+
     const src = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
     const data = JSON.parse(JSON.stringify(src));
 
     // Ensure exactly 4 entries, one per direction
-    const mapped = DIRECTIONS.map((dir, i) => {
-      const raw = data[i % data.length];
-      return {
-        direction:    dir,
-        phase:        i === 0 ? 'GREEN' : 'RED',   // start with North GREEN
-        timer:        i === 0 ? (raw.nextChange ?? 30) : (raw.nextChange ?? 30) * (i + 1),
-        greenTime:    raw.greenTime ?? 30,
-        vehicleCount: raw.vehicleCount ?? null,
-        density:      countToDensity(raw.vehicleCount),
-        yellowPending: false,     // true when we're doing a yellow flash
-      };
+    setSignals(prev => {
+      if (prev.length === 0) {
+        return DIRECTIONS.map((dir, i) => {
+          const raw = data[i % data.length];
+          return {
+            direction:    dir,
+            phase:        i === 0 ? 'GREEN' : 'RED',   // start with North GREEN
+            timer:        i === 0 ? Math.floor(raw.nextChange ?? 30) : Math.floor((raw.nextChange ?? 30) * (i + 1)),
+            greenTime:    Math.floor(raw.greenTime ?? 30),
+            vehicleCount: raw.vehicleCount ?? null,
+            density:      countToDensity(raw.vehicleCount),
+            yellowPending: false,
+          };
+        });
+      } else {
+        return prev.map((s, i) => {
+          const raw = data[i % data.length];
+          return {
+            ...s,
+            greenTime:    Math.floor(raw.greenTime ?? 30),
+            vehicleCount: raw.vehicleCount ?? null,
+            density:      countToDensity(raw.vehicleCount),
+          };
+        });
+      }
     });
 
-    setSignals(mapped);
+    setBgState('idle');
   }, [liveData]);
 
-  // 2. Countdown + Yellow-phase transition
+  // 2. Countdown + Yellow-phase transition + background detection trigger
   useEffect(() => {
     if (signals.length === 0) return;
 
@@ -192,7 +261,7 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
         if (prev.length === 0) return prev;
         const next = prev.map(s => ({ ...s }));
 
-        let greenIdx = next.findIndex(s => s.phase === 'GREEN');
+        let greenIdx  = next.findIndex(s => s.phase === 'GREEN');
         let yellowIdx = next.findIndex(s => s.phase === 'YELLOW');
 
         // ── Handle YELLOW phase countdown ──────────────────────────────────
@@ -200,13 +269,28 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
           next[yellowIdx].timer = Math.max(0, next[yellowIdx].timer - 1);
 
           if (next[yellowIdx].timer === 0) {
-            // Yellow expired → go RED, next direction goes GREEN
             next[yellowIdx].phase        = 'RED';
             next[yellowIdx].yellowPending = false;
             const nextGreenIdx           = (yellowIdx + 1) % next.length;
             next[nextGreenIdx].phase     = 'GREEN';
             next[nextGreenIdx].timer     = Math.max(1, next[nextGreenIdx].greenTime ?? 30);
             greenIdx                     = nextGreenIdx;
+
+            // ── 🔄 Background trigger logic ────────────────────────────────
+            const newGreenDir = next[greenIdx]?.direction;
+            const lastGreenDir = prevGreenDirRef.current;
+
+            // When West becomes GREEN → pre-fetch next cycle's detection in bg
+            if (newGreenDir === 'West' && lastGreenDir !== 'West') {
+              triggerBgDetect();
+            }
+            // When North becomes GREEN again → a full cycle completed
+            // bgState 'ready' means new results already delivered; reset
+            if (newGreenDir === 'North' && lastGreenDir !== 'North') {
+              setBgState(s => s === 'ready' ? 'idle' : s);
+            }
+
+            prevGreenDirRef.current = newGreenDir;
           }
 
           // Cascade waits for remaining RED signals
@@ -235,7 +319,6 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
         if (next[greenIdx].timer <= YELLOW_SECS && next[greenIdx].timer > 0) {
           next[greenIdx].phase = 'YELLOW';
         } else if (next[greenIdx].timer === 0) {
-          // Fallback if yellow was skipped somehow
           next[greenIdx].phase = 'RED';
           const nextGI = (greenIdx + 1) % next.length;
           next[nextGI].phase   = 'GREEN';
@@ -264,7 +347,7 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [signals.length]);
+  }, [signals.length, triggerBgDetect]);
 
   return (
     <div className="glass-card animate-fade-in-up" style={{ padding: '24px' }}>
@@ -281,9 +364,36 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
               : 'Live N / S / E / W — Green → Yellow → Red cycle'}
           </div>
         </div>
-        <div className="status-badge status-green" style={{ marginLeft: 'auto' }}>
-          <span className="pulse-dot" style={{ background: '#10b981' }} />
-          {fromVideo ? 'From Video' : 'Live'}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Background detection status badge */}
+          {bgState === 'processing' && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '5px',
+              padding: '4px 10px', borderRadius: '999px',
+              background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)',
+              fontSize: '0.65rem', fontWeight: 700, color: '#f59e0b',
+              animation: 'bgPulse 1.5s ease-in-out infinite',
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#f59e0b',
+                animation: 'pulse 1s infinite' }} />
+              Analysing next cycle…
+            </div>
+          )}
+          {bgState === 'ready' && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '5px',
+              padding: '4px 10px', borderRadius: '999px',
+              background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)',
+              fontSize: '0.65rem', fontWeight: 700, color: '#10b981',
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
+              New data applied ✓
+            </div>
+          )}
+          <div className="status-badge status-green">
+            <span className="pulse-dot" style={{ background: '#10b981' }} />
+            {fromVideo ? 'From Video' : 'Live'}
+          </div>
         </div>
       </div>
 
@@ -329,6 +439,10 @@ const IntersectionSignals = ({ liveData, fromVideo }) => {
         @keyframes yellowBlink {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.3; }
+        }
+        @keyframes bgPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.6; }
         }
       `}</style>
     </div>

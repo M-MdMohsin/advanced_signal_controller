@@ -235,6 +235,7 @@ def video_status(job_id: str):
             "frameCount":      job.get("frameCount"),
             "processingTime":  job.get("processingTime"),
             "annotatedFrames": job.get("annotatedFrames"),
+            "annotatedImages": job.get("annotatedImages"),   # per-lane URLs from auto-detect
             "frameIndices":    job.get("frameIndices"),
             "videoMeta":       job.get("videoMeta"),
         })
@@ -274,3 +275,163 @@ def delete_job(job_id: str):
         os.remove(file_path)
 
     return jsonify({"success": True, "message": f"Job {job_id} deleted."})
+
+
+# ── Auto-detect from lane image folders ──────────────────────────────────────
+#
+# GET /api/video/auto-detect
+#   Reads backend/images/{north,east,south,west}/ and runs YOLO on the
+#   next image in each folder (cycles automatically).  Results are merged
+#   into a single combined job entry identical in shape to a manual upload.
+#
+# GET /api/video/feeder-status
+#   Returns the current state of every lane folder (image list, next index).
+
+@video_bp.route("/auto-detect", methods=["GET"])
+def auto_detect():
+    """
+    Pick the next image from each lane folder and run YOLO detection.
+    Only lane folders that contain at least one image are processed.
+    The results are merged and stored as a single job in _jobs so that
+    /api/dashboard/summary picks them up automatically via _get_latest_yolo_result().
+    """
+    import sys
+    backend_root = os.path.dirname(os.path.dirname(__file__))
+    if backend_root not in sys.path:
+        sys.path.insert(0, backend_root)
+
+    from image_feeder import get_next_image_for_lane, LANE_NAMES, feeder_status
+    from yolo_detector import detect_image
+
+    # Collect one image path per lane (skip lanes with no images)
+    lane_images: dict[str, str] = {}
+    for lane in LANE_NAMES:
+        path = get_next_image_for_lane(lane)
+        if path:
+            lane_images[lane] = path
+
+    if not lane_images:
+        return jsonify({
+            "success": False,
+            "error":   (
+                "No images found in any lane folder. "
+                "Place images inside backend/images/north/, east/, south/, west/."
+            ),
+            "feederStatus": feeder_status(),
+        }), 404
+
+    # Create one combined job entry
+    job_id = uuid.uuid4().hex
+    _jobs[job_id] = {
+        "status":      "processing",
+        "filename":    "auto_detect",
+        "original":    "auto_detect",
+        "sizeMb":      0,
+        "uploadedAt":  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "progress":    0,
+        "laneCounts":      None,
+        "laneDetails":     None,
+        "totalVehicles":   None,
+        "frameCount":      None,
+        "processingTime":  None,
+        "annotatedFrames": None,
+        "error":           None,
+    }
+
+    def _run_all_lanes():
+        """
+        Process every lane image sequentially in a background thread.
+        Each image is run through detect_image with its lane as target_lane
+        so the whole frame is treated as that single lane.
+        After all lanes finish, merge their laneDetails into one job record.
+        """
+        collected_details: list = []
+        collected_counts:  dict = {}
+        annotated_images:  dict = {}   # { "North": "/static/images/detected_xxx.jpg", ... }
+        start_ts = time.time()
+
+        for lane_key, img_path in lane_images.items():
+            lane_job_id = uuid.uuid4().hex
+            _jobs[lane_job_id] = {
+                "status":      "processing",
+                "filename":    os.path.basename(img_path),
+                "original":    os.path.basename(img_path),
+                "sizeMb":      round(os.path.getsize(img_path) / (1024 * 1024), 3),
+                "uploadedAt":  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "progress":    0,
+                "laneCounts":      None,
+                "laneDetails":     None,
+                "totalVehicles":   None,
+                "frameCount":      None,
+                "processingTime":  None,
+                "annotatedFrames": None,
+                "error":           None,
+            }
+            # target_lane = capitalised lane name so YOLO treats the whole frame as one lane
+            detect_image(img_path, _jobs, lane_job_id, target_lane=lane_key.capitalize())
+
+            sub_job = _jobs.get(lane_job_id, {})
+            if sub_job.get("status") == "completed" and sub_job.get("laneDetails"):
+                for detail in sub_job["laneDetails"]:
+                    collected_details.append(detail)
+                    collected_counts[detail["lane"]] = detail["vehicleCount"]
+                # Collect the annotated image URL saved by detect_image
+                if sub_job.get("output"):
+                    annotated_images[lane_key.capitalize()] = sub_job["output"]
+
+            # Clean up the temporary sub-job to keep _jobs tidy
+            _jobs.pop(lane_job_id, None)
+
+            # Update combined job progress proportionally
+            done = list(lane_images.keys()).index(lane_key) + 1
+            _jobs[job_id]["progress"] = int((done / len(lane_images)) * 95)
+
+        elapsed = round(time.time() - start_ts, 2)
+
+        if not collected_details:
+            _jobs[job_id].update({
+                "status":   "error",
+                "error":    "YOLO detection produced no results for any lane.",
+                "progress": 0,
+            })
+            return
+
+        _jobs[job_id].update({
+            "status":          "completed",
+            "progress":        100,
+            "type":            "auto_image",
+            "message":         f"Auto-detected {len(lane_images)} lane(s) from folder images.",
+            "laneCounts":      collected_counts,
+            "laneDetails":     collected_details,
+            "totalVehicles":   sum(collected_counts.values()),
+            "frameCount":      len(lane_images),
+            "processingTime":  elapsed,
+            "annotatedFrames": None,
+            "annotatedImages": annotated_images,  # { "North": "/static/images/...", ... }
+        })
+
+    # Run all lanes in a single daemon thread
+    t = threading.Thread(target=_run_all_lanes, daemon=True, name=f"auto-detect-{job_id[:8]}")
+    t.start()
+
+    return jsonify({
+        "success":      True,
+        "jobId":        job_id,
+        "lanesQueued":  list(lane_images.keys()),
+        "imagesUsed":   {k: os.path.basename(v) for k, v in lane_images.items()},
+        "message":      "Auto-detection started. Poll /api/video/status/<jobId> for results.",
+        "statusUrl":    f"/api/video/status/{job_id}",
+        "feederStatus": feeder_status(),
+    }), 202
+
+
+@video_bp.route("/feeder-status", methods=["GET"])
+def get_feeder_status():
+    """Return the current state of every lane image folder (for debugging / UI)."""
+    import sys
+    backend_root = os.path.dirname(os.path.dirname(__file__))
+    if backend_root not in sys.path:
+        sys.path.insert(0, backend_root)
+
+    from image_feeder import feeder_status
+    return jsonify({"success": True, "feeder": feeder_status()})
