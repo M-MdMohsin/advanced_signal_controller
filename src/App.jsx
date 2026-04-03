@@ -17,7 +17,7 @@ const BACKEND = import.meta.env.VITE_API_URL
   : 'http://localhost:5000';
 
 // ── Lane annotated image card ──────────────────────────────────────────────
-const LaneImageCard = ({ lane, src, count }) => {
+const LaneImageCard = ({ lane, src, count, stamp }) => {
   const icons = { North: '⬆️', East: '➡️', South: '⬇️', West: '⬅️' };
   return (
     <div style={{
@@ -28,7 +28,7 @@ const LaneImageCard = ({ lane, src, count }) => {
       position: 'relative',
     }}>
       <img
-        src={`${BACKEND}${src}`}
+        src={`${BACKEND}${src}?t=${stamp || ''}`}
         alt={`${lane} lane detection`}
         style={{ width: '100%', display: 'block', aspectRatio: '4/3', objectFit: 'cover' }}
         onError={e => { e.target.style.display = 'none'; }}
@@ -58,13 +58,11 @@ const LaneImageCard = ({ lane, src, count }) => {
 };
 
 // ── Auto-Detect Panel ─────────────────────────────────────────────────────────
-const AutoDetectPanel = ({ onDetectionComplete, onRefresh }) => {
+const AutoDetectPanel = ({ onDetectionComplete, onRefresh, externalImages, externalCounts }) => {
   const [state, setState] = useState('idle');
   const [progress, setProgress] = useState(0);
   const [info, setInfo] = useState(null);
   const [error, setError] = useState(null);
-  const [annotatedImages, setAnnotatedImages] = useState(null);  // { North: "/static/...", ... }
-  const [laneCounts, setLaneCounts] = useState(null);
   const pollRef = useRef(null);
 
   const stopPolling = () => {
@@ -77,8 +75,6 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh }) => {
     setProgress(0);
     setError(null);
     setInfo(null);
-    setAnnotatedImages(null);
-    setLaneCounts(null);
 
     try {
       const res = await triggerAutoDetect();
@@ -96,12 +92,12 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh }) => {
             stopPolling();
             setState('done');
             setProgress(100);
-            setAnnotatedImages(status.annotatedImages ?? null);
-            setLaneCounts(status.laneCounts ?? null);
             onDetectionComplete?.({
               laneDetails:      status.laneDetails,
               signalAllocation: status.signal,
               totalVehicles:    status.totalVehicles,
+              annotatedImages:  status.annotatedImages ?? null,
+              laneCounts:       status.laneCounts ?? null,
               fromVideo:        true,
             });
             // immediately refresh dashboard so signal allocation panel gets real data
@@ -133,7 +129,16 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh }) => {
     error:   { accent: '#ef4444', glow: 'rgba(239,68,68,0.35)',   label: 'Retry',                icon: '⚠️' },
   }[state];
 
-  const hasImages = annotatedImages && Object.keys(annotatedImages).length > 0;
+  const activeImages = externalImages;
+  const activeCounts = externalCounts;
+  const hasImages = activeImages && Object.keys(activeImages).length > 0;
+
+  // Use a stable timestamp that updates exactly when the images object changes
+  // to bypass generic browser caches holding old prediction images of the same name.
+  const [stamp, setStamp] = useState(Date.now());
+  useEffect(() => {
+    setStamp(Date.now());
+  }, [activeImages]);
 
   return (
     <div style={{
@@ -187,12 +192,13 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh }) => {
             YOLO Detection Results
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-            {Object.entries(annotatedImages).map(([lane, url]) => (
+            {Object.entries(activeImages).map(([lane, url]) => (
               <LaneImageCard
                 key={lane}
                 lane={lane}
                 src={url}
-                count={laneCounts?.[lane]}
+                count={activeCounts?.[lane]}
+                stamp={stamp}
               />
             ))}
           </div>
@@ -312,7 +318,7 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh }) => {
 
       {(state === 'done' || state === 'error') && (
         <button
-          onClick={() => { setState('idle'); setInfo(null); setError(null); setProgress(0); setAnnotatedImages(null); setLaneCounts(null); }}
+          onClick={() => { setState('idle'); setInfo(null); setError(null); setProgress(0); }}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#475569', fontSize: '0.7rem', textDecoration: 'underline', padding: 0, textAlign: 'center' }}
         >
           Reset
@@ -494,11 +500,13 @@ const Dashboard = () => {
               <AutoDetectPanel
                 onDetectionComplete={handleDetectionComplete}
                 onRefresh={fetchDashboard}
+                externalImages={detectionData?.annotatedImages}
+                externalCounts={detectionData?.laneCounts}
               />
               <SignalAllocation liveData={signalData} fromVideo={fromVideo} />
             </div>
             <div style={{ marginBottom: '20px' }}>
-              <IntersectionSignals liveData={signalData} fromVideo={fromVideo} />
+              <IntersectionSignals liveData={signalData} fromVideo={fromVideo} onNewDetectionResult={handleDetectionComplete} />
             </div>
             <div style={{ marginBottom: '20px' }}>
               <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
@@ -514,7 +522,7 @@ const Dashboard = () => {
         {activeTab === 'analytics' && (
           <>
             <div style={{ marginBottom: '20px' }}>
-              <IntersectionSignals liveData={signalData} fromVideo={fromVideo} />
+              <IntersectionSignals liveData={signalData} fromVideo={fromVideo} onNewDetectionResult={handleDetectionComplete} />
             </div>
             <div style={{ marginBottom: '20px' }}>
               <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />

@@ -37,7 +37,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
         // Ensure at least one signal is explicitly GREEN to start the cycle
         if (freshSignals.length > 0 && !freshSignals.some(s => s.phase === 'GREEN')) {
             freshSignals[0].phase = 'GREEN';
-            freshSignals[0].nextChange = freshSignals[0].greenTime || 30;
+            freshSignals[0].nextChange = Math.floor(freshSignals[0].greenTime || 30);
         }
         setSignals(freshSignals);
     }, [liveData]);
@@ -64,7 +64,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
                     nextState[greenIdx].phase = 'RED';
                     greenIdx = (greenIdx + 1) % nextState.length;
                     nextState[greenIdx].phase = 'GREEN';
-                    nextState[greenIdx].nextChange = Math.max(1, nextState[greenIdx].greenTime || 30);
+                    nextState[greenIdx].nextChange = Math.max(1, Math.floor(nextState[greenIdx].greenTime || 30));
                 }
 
                 // Cascade wait times for RED lights
@@ -179,7 +179,7 @@ const SignalRow = ({ signal, cycleLen }) => {
                     <div>
                         <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#e2e8f0' }}>{signal.lane} — Signal</div>
                         <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                            Next change in {signal.nextChange}s
+                            Next change in {Math.floor(signal.nextChange)}s
                             {signal.vehicleCount != null && (
                                 <span style={{ marginLeft: '8px', color: '#475569' }}>· {signal.vehicleCount} vehicles</span>
                             )}
@@ -201,7 +201,7 @@ const SignalRow = ({ signal, cycleLen }) => {
             <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
                     <span style={{ fontSize: '0.7rem', color: '#64748b' }}>Green Time Allocation</span>
-                    <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#10b981' }}>{signal.greenTime}s / {cycleLen}s</span>
+                    <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#10b981' }}>{Math.floor(signal.greenTime)}s / {Math.floor(cycleLen)}s</span>
                 </div>
                 <div className="progress-bar-track">
                     <div className="progress-bar-fill" style={{ width: `${Math.min(100, (signal.greenTime / cycleLen) * 100)}%`, background: 'linear-gradient(90deg, #10b981, #34d399)' }} />

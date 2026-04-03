@@ -22,7 +22,7 @@ def compute_green_times(lane_counts: dict) -> dict:
     for lane, count in lane_counts.items():
         ratio = count / total_count
         green_time = MIN_GREEN + ratio * (MAX_GREEN - MIN_GREEN)
-        green_times[lane] = round(green_time, 1)
+        green_times[lane] = int(green_time)  # integers only — no decimals
 
     return green_times
 
@@ -68,7 +68,7 @@ def build_signal_payload(lane_counts: dict) -> list:
             priority = "Low"
 
         # next_change: rough estimate (half cycle when RED, full when GREEN)
-        next_change = round(green_time / 2) if phase == "RED" else round(green_time)
+        next_change = int(green_time / 2) if phase == "RED" else int(green_time)
 
         result.append({
             "lane":        lane,
