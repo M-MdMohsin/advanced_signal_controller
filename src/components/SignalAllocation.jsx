@@ -28,17 +28,38 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
     // 1. Sync incoming data — only reset cycle when content actually changes
     useEffect(() => {
         const incoming = JSON.stringify(liveData);
-        if (incoming === prevDataRef.current) return; // same data, keep running cycle
+        if (incoming === prevDataRef.current) return;
         prevDataRef.current = incoming;
 
         const data = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
         const freshSignals = JSON.parse(JSON.stringify(data));
 
-        // Ensure at least one signal is explicitly GREEN to start the cycle
-        if (freshSignals.length > 0 && !freshSignals.some(s => s.phase === 'GREEN')) {
+        let greenFound = false;
+        freshSignals.forEach(s => {
+            if (s.phase === 'GREEN' && !greenFound) {
+                greenFound = true;
+                s.nextChange = Math.floor(s.nextChange ?? s.greenTime ?? 30);
+            } else {
+                s.phase = 'RED';
+                s.nextChange = Math.floor(s.nextChange ?? s.greenTime ?? 30);
+            }
+        });
+
+        if (!greenFound && freshSignals.length > 0) {
             freshSignals[0].phase = 'GREEN';
             freshSignals[0].nextChange = Math.floor(freshSignals[0].greenTime || 30);
         }
+
+        const gIdx = freshSignals.findIndex(s => s.phase === 'GREEN');
+        if (gIdx !== -1) {
+            let wait = freshSignals[gIdx].nextChange;
+            for (let i = 1; i < freshSignals.length; i++) {
+                const ri = (gIdx + i) % freshSignals.length;
+                freshSignals[ri].nextChange = wait;
+                wait += (freshSignals[ri].greenTime || 30);
+            }
+        }
+
         setSignals(freshSignals);
     }, [liveData]);
 

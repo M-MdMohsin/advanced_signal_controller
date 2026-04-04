@@ -215,44 +215,53 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
   // 1. Build initial 4-direction signals — only reset when content actually changes
   useEffect(() => {
     const incoming = JSON.stringify(liveData);
-    if (incoming === prevDataRef.current) return; // same data, keep running cycle
+    if (incoming === prevDataRef.current) return;
     prevDataRef.current = incoming;
 
     const src = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
     const data = JSON.parse(JSON.stringify(src));
 
-    // Ensure exactly 4 entries, one per direction
-    setSignals(prev => {
-      if (prev.length === 0) {
-        return DIRECTIONS.map((dir, i) => {
-          const raw = data[i % data.length];
-          return {
-            direction:    dir,
-            phase:        i === 0 ? 'GREEN' : 'RED',   // start with North GREEN
-            timer:        i === 0 ? Math.floor(raw.nextChange ?? 30) : Math.floor((raw.nextChange ?? 30) * (i + 1)),
-            greenTime:    Math.floor(raw.greenTime ?? 30),
-            vehicleCount: raw.vehicleCount ?? null,
-            density:      countToDensity(raw.vehicleCount),
-            yellowPending: false,
-          };
-        });
-      } else {
-        return prev.map((s, i) => {
-          const raw = data[i % data.length];
-          return {
-            ...s,
-            greenTime:    Math.floor(raw.greenTime ?? 30),
-            vehicleCount: raw.vehicleCount ?? null,
-            density:      countToDensity(raw.vehicleCount),
-          };
-        });
+    let greenFound = false;
+    const mapped = DIRECTIONS.map((dir, i) => {
+      const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
+      
+      let basePhase = 'RED';
+      if ((raw.phase === 'GREEN' || raw.phase === 'YELLOW') && !greenFound) {
+        basePhase = 'GREEN';
+        greenFound = true;
       }
+      
+      return {
+        direction:    dir,
+        phase:        basePhase,
+        timer:        Math.floor(raw.nextChange ?? raw.greenTime ?? 30),
+        greenTime:    Math.floor(raw.greenTime ?? 30),
+        vehicleCount: raw.vehicleCount ?? null,
+        density:      countToDensity(raw.vehicleCount),
+        yellowPending: false,
+      };
     });
 
+    if (!greenFound && mapped.length > 0) {
+      mapped[0].phase = 'GREEN';
+      mapped[0].timer = mapped[0].greenTime;
+    }
+
+    const gIdx = mapped.findIndex(s => s.phase === 'GREEN');
+    if (gIdx !== -1) {
+      let wait = mapped[gIdx].timer;
+      for (let i = 1; i < mapped.length; i++) {
+        const ri = (gIdx + i) % mapped.length;
+        mapped[ri].timer = wait;
+        wait += mapped[ri].greenTime;
+      }
+    }
+
+    setSignals(mapped);
     setBgState('idle');
   }, [liveData]);
 
-  // 2. Countdown + Yellow-phase transition + background detection trigger
+  // 2. Countdown + Yellow-phase transition
   useEffect(() => {
     if (signals.length === 0) return;
 
@@ -264,7 +273,6 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
         let greenIdx  = next.findIndex(s => s.phase === 'GREEN');
         let yellowIdx = next.findIndex(s => s.phase === 'YELLOW');
 
-        // ── Handle YELLOW phase countdown ──────────────────────────────────
         if (yellowIdx !== -1) {
           next[yellowIdx].timer = Math.max(0, next[yellowIdx].timer - 1);
 
@@ -275,64 +283,44 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
             next[nextGreenIdx].phase     = 'GREEN';
             next[nextGreenIdx].timer     = Math.max(1, next[nextGreenIdx].greenTime ?? 30);
             greenIdx                     = nextGreenIdx;
+            yellowIdx                    = -1;
+          }
+        } else {
+          if (greenIdx === -1) {
+            greenIdx = 0;
+            next[0].phase = 'GREEN';
+          }
 
-            // ── 🔄 Background trigger logic ────────────────────────────────
+          next[greenIdx].timer = Math.max(0, next[greenIdx].timer - 1);
+
+          if (next[greenIdx].timer === 0) {
+            next[greenIdx].phase = 'RED';
+            const nextGI = (greenIdx + 1) % next.length;
+            next[nextGI].phase   = 'GREEN';
+            next[nextGI].timer   = Math.max(1, next[nextGI].greenTime ?? 30);
+            greenIdx             = nextGI;
+          } else if (next[greenIdx].timer <= YELLOW_SECS) {
+            next[greenIdx].phase = 'YELLOW';
+            yellowIdx            = greenIdx;
+            greenIdx             = -1;
+          }
+        }
+
+        if (greenIdx !== -1) {
             const newGreenDir = next[greenIdx]?.direction;
             const lastGreenDir = prevGreenDirRef.current;
-
-            // When West becomes GREEN → pre-fetch next cycle's detection in bg
-            if (newGreenDir === 'West' && lastGreenDir !== 'West') {
-              triggerBgDetect();
+            if (newGreenDir !== lastGreenDir) {
+                if (newGreenDir === 'North') {
+                    setBgState(s => s === 'ready' ? 'idle' : s);
+                }
+                prevGreenDirRef.current = newGreenDir;
             }
-            // When North becomes GREEN again → a full cycle completed
-            // bgState 'ready' means new results already delivered; reset
-            if (newGreenDir === 'North' && lastGreenDir !== 'North') {
-              setBgState(s => s === 'ready' ? 'idle' : s);
-            }
-
-            prevGreenDirRef.current = newGreenDir;
-          }
-
-          // Cascade waits for remaining RED signals
-          let wait = (greenIdx !== -1 ? next[greenIdx].timer : 0) + YELLOW_SECS;
-          for (let i = 1; i < next.length; i++) {
-            const idx = (greenIdx !== -1 ? greenIdx : yellowIdx + 1) + i;
-            const ri  = ((idx % next.length) + next.length) % next.length;
-            if (next[ri].phase === 'RED') {
-              next[ri].timer = wait;
-              wait += (next[ri].greenTime ?? 30);
-            }
-          }
-
-          return next;
-        }
-
-        // ── Handle GREEN phase countdown ────────────────────────────────────
-        if (greenIdx === -1) {
-          greenIdx = 0;
-          next[0].phase = 'GREEN';
-        }
-
-        next[greenIdx].timer = Math.max(0, next[greenIdx].timer - 1);
-
-        // When GREEN timer hits YELLOW_SECS → switch to YELLOW
-        if (next[greenIdx].timer <= YELLOW_SECS && next[greenIdx].timer > 0) {
-          next[greenIdx].phase = 'YELLOW';
-        } else if (next[greenIdx].timer === 0) {
-          next[greenIdx].phase = 'RED';
-          const nextGI = (greenIdx + 1) % next.length;
-          next[nextGI].phase   = 'GREEN';
-          next[nextGI].timer   = Math.max(1, next[nextGI].greenTime ?? 30);
-          greenIdx = nextGI;
         }
 
         // Cascade wait times for RED signals
-        const activeIdx = next.findIndex(s => s.phase === 'GREEN') === -1
-          ? next.findIndex(s => s.phase === 'YELLOW')
-          : next.findIndex(s => s.phase === 'GREEN');
-
+        const activeIdx = greenIdx !== -1 ? greenIdx : yellowIdx;
         if (activeIdx !== -1) {
-          let wait = next[activeIdx].timer + (next[activeIdx].phase === 'GREEN' ? YELLOW_SECS : 0);
+          let wait = next[activeIdx].timer;
           for (let i = 1; i < next.length; i++) {
             const ri = (activeIdx + i) % next.length;
             if (next[ri].phase === 'RED') {
@@ -343,11 +331,11 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
         }
 
         return next;
-      });
+       });
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [signals.length, triggerBgDetect]);
+  }, [signals.length]);
 
   return (
     <div className="glass-card animate-fade-in-up" style={{ padding: '24px' }}>

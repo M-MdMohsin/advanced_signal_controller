@@ -509,11 +509,7 @@ const Dashboard = () => {
               <IntersectionSignals liveData={signalData} fromVideo={fromVideo} onNewDetectionResult={handleDetectionComplete} />
             </div>
             <div style={{ marginBottom: '20px' }}>
-              <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
               <DensityChart liveData={dashData?.chartHistory} />
-              <EmergencyVehicle liveData={dashData?.emergencyEvents} />
             </div>
           </>
         )}
