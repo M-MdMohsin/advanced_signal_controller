@@ -32,6 +32,8 @@ dist-ssr
 backend/uploads/
 backend/images/
 backend/static/
+backend/__pycache__/
+*.pyc
 src/static/
 .env
 
