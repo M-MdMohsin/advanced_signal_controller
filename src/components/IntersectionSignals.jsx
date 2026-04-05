@@ -212,6 +212,17 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
   // Cleanup on unmount
   useEffect(() => () => stopBgPoll(), [stopBgPoll]);
 
+  // ── Trigger detection 20s before cycle finishes ────────────────────────────
+  useEffect(() => {
+    if (fromVideo && signals.length > 0) {
+      // signals[0] is typically North. The iteration ends when North turns green.
+      // So when North's RED timer is exactly 20, there are 20s left in the entire iteration.
+      if (signals[0].phase === 'RED' && signals[0].timer === 20) {
+        triggerBgDetect();
+      }
+    }
+  }, [signals, triggerBgDetect]);
+
   // 1. Build initial 4-direction signals — only reset when content actually changes
   useEffect(() => {
     const incoming = JSON.stringify(liveData);
@@ -221,43 +232,60 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
     const src = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
     const data = JSON.parse(JSON.stringify(src));
 
-    let greenFound = false;
-    const mapped = DIRECTIONS.map((dir, i) => {
-      const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
-      
-      let basePhase = 'RED';
-      if ((raw.phase === 'GREEN' || raw.phase === 'YELLOW') && !greenFound) {
-        basePhase = 'GREEN';
-        greenFound = true;
+    setSignals(prev => {
+      if (prev && prev.length > 0) {
+        // If we already have signals running, preserve their sequence (phase and exact timer).
+        // Only update greenTime, count, and density so the transition is seamless.
+        return prev.map((oldSig, i) => {
+          const raw = data.find(d => (d.lane || d.direction || '').includes(oldSig.direction)) || data[i % data.length];
+          return {
+            ...oldSig,
+            greenTime:    Math.floor(raw.greenTime ?? 30),
+            vehicleCount: raw.vehicleCount ?? null,
+            density:      countToDensity(raw.vehicleCount)
+          };
+        });
       }
-      
-      return {
-        direction:    dir,
-        phase:        basePhase,
-        timer:        Math.floor(raw.nextChange ?? raw.greenTime ?? 30),
-        greenTime:    Math.floor(raw.greenTime ?? 30),
-        vehicleCount: raw.vehicleCount ?? null,
-        density:      countToDensity(raw.vehicleCount),
-        yellowPending: false,
-      };
+
+      // Startup initialization (first time)
+      let greenFound = false;
+      const mapped = DIRECTIONS.map((dir, i) => {
+        const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
+        
+        let basePhase = 'RED';
+        if ((raw.phase === 'GREEN' || raw.phase === 'YELLOW') && !greenFound) {
+          basePhase = 'GREEN';
+          greenFound = true;
+        }
+        
+        return {
+          direction:    dir,
+          phase:        basePhase,
+          timer:        Math.floor(raw.nextChange ?? raw.greenTime ?? 30),
+          greenTime:    Math.floor(raw.greenTime ?? 30),
+          vehicleCount: raw.vehicleCount ?? null,
+          density:      countToDensity(raw.vehicleCount),
+          yellowPending: false,
+        };
+      });
+
+      if (!greenFound && mapped.length > 0) {
+        mapped[0].phase = 'GREEN';
+        mapped[0].timer = mapped[0].greenTime;
+      }
+
+      const gIdx = mapped.findIndex(s => s.phase === 'GREEN');
+      if (gIdx !== -1) {
+        let wait = mapped[gIdx].timer;
+        for (let i = 1; i < mapped.length; i++) {
+          const ri = (gIdx + i) % mapped.length;
+          mapped[ri].timer = wait;
+          wait += mapped[ri].greenTime;
+        }
+      }
+      return mapped;
     });
 
-    if (!greenFound && mapped.length > 0) {
-      mapped[0].phase = 'GREEN';
-      mapped[0].timer = mapped[0].greenTime;
-    }
-
-    const gIdx = mapped.findIndex(s => s.phase === 'GREEN');
-    if (gIdx !== -1) {
-      let wait = mapped[gIdx].timer;
-      for (let i = 1; i < mapped.length; i++) {
-        const ri = (gIdx + i) % mapped.length;
-        mapped[ri].timer = wait;
-        wait += mapped[ri].greenTime;
-      }
-    }
-
-    setSignals(mapped);
     setBgState('idle');
   }, [liveData]);
 
