@@ -155,19 +155,19 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh, externalImages, exter
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{
+          {/* <div style={{
             width: 34, height: 34, borderRadius: '10px',
             background: `linear-gradient(135deg, ${theme.accent}, #6366f1)`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: '1rem', boxShadow: `0 4px 12px ${theme.glow}`,
-          }}>🤖</div>
+          }}>🤖</div> */}
           <div>
             <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#e2e8f0' }}>
               Auto Image Detection
             </div>
-            <div style={{ fontSize: '0.68rem', color: '#475569' }}>
+            {/* <div style={{ fontSize: '0.68rem', color: '#475569' }}>
               Reads from <code style={{ color: '#64748b', background: 'rgba(255,255,255,0.05)', padding: '1px 5px', borderRadius: '4px' }}>backend/images/&lt;lane&gt;/</code>
-            </div>
+            </div> */}
           </div>
         </div>
         <div style={{
@@ -311,7 +311,7 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh, externalImages, exter
         }}
       >
         <span style={{ display: 'inline-block', animation: state === 'running' ? 'spin 1.2s linear infinite' : 'none' }}>
-          {theme.icon}
+          {/* {theme.icon} */}
         </span>
         {theme.label}
       </button>
@@ -546,7 +546,7 @@ const Dashboard = () => {
 
       <footer style={{ borderTop: '1px solid rgba(255,255,255,0.05)', padding: '20px 24px', textAlign: 'center' }}>
         <p style={{ margin: 0, color: '#334155', fontSize: '0.75rem' }}>
-          AI Traffic Signal Management System · ATMS v2.4 · Backend: Flask + YOLOv8 · Formula: GreenTime = MIN + (count/total) × (MAX − MIN)
+          AI Traffic Signal Management System
         </p>
       </footer>
 

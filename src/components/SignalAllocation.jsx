@@ -32,32 +32,24 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
         prevDataRef.current = incoming;
 
         const data = (liveData && liveData.length > 0) ? liveData : signalAllocationData;
-        const freshSignals = JSON.parse(JSON.stringify(data));
-
-        let greenFound = false;
-        freshSignals.forEach(s => {
-            if (s.phase === 'GREEN' && !greenFound) {
-                greenFound = true;
-                s.nextChange = Math.floor(s.nextChange ?? s.greenTime ?? 30);
-            } else {
-                s.phase = 'RED';
-                s.nextChange = Math.floor(s.nextChange ?? s.greenTime ?? 30);
-            }
+        
+        const DIRECTIONS = ['North', 'South', 'East', 'West'];
+        const freshSignals = DIRECTIONS.map((dir, i) => {
+            const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
+            return {
+                lane: dir,
+                phase: i === 0 ? 'GREEN' : 'RED',
+                nextChange: Math.floor(raw.greenTime ?? 30),
+                greenTime: Math.floor(raw.greenTime ?? 30),
+                vehicleCount: raw.vehicleCount ?? null,
+                priority: raw.priority ?? 'Medium'
+            };
         });
 
-        if (!greenFound && freshSignals.length > 0) {
-            freshSignals[0].phase = 'GREEN';
-            freshSignals[0].nextChange = Math.floor(freshSignals[0].greenTime || 30);
-        }
-
-        const gIdx = freshSignals.findIndex(s => s.phase === 'GREEN');
-        if (gIdx !== -1) {
-            let wait = freshSignals[gIdx].nextChange;
-            for (let i = 1; i < freshSignals.length; i++) {
-                const ri = (gIdx + i) % freshSignals.length;
-                freshSignals[ri].nextChange = wait;
-                wait += (freshSignals[ri].greenTime || 30);
-            }
+        let wait = freshSignals[0].nextChange;
+        for (let i = 1; i < freshSignals.length; i++) {
+            freshSignals[i].nextChange = wait;
+            wait += freshSignals[i].greenTime;
         }
 
         setSignals(freshSignals);
@@ -72,28 +64,49 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
                 if (prev.length === 0) return prev;
                 const nextState = prev.map(s => ({ ...s }));
                 let greenIdx = nextState.findIndex(s => s.phase === 'GREEN');
+                let yellowIdx = nextState.findIndex(s => s.phase === 'YELLOW');
 
-                if (greenIdx === -1) {
-                    greenIdx = 0;
-                    nextState[0].phase = 'GREEN';
-                }
-
-                nextState[greenIdx].nextChange = Math.max(0, nextState[greenIdx].nextChange - 1);
-
-                // Phase transition
-                if (nextState[greenIdx].nextChange === 0) {
-                    nextState[greenIdx].phase = 'RED';
-                    greenIdx = (greenIdx + 1) % nextState.length;
-                    nextState[greenIdx].phase = 'GREEN';
-                    nextState[greenIdx].nextChange = Math.max(1, Math.floor(nextState[greenIdx].greenTime || 30));
+                if (yellowIdx !== -1) {
+                    nextState[yellowIdx].nextChange = Math.max(0, nextState[yellowIdx].nextChange - 1);
+                    if (nextState[yellowIdx].nextChange === 0) {
+                        nextState[yellowIdx].phase = 'RED';
+                        const nextGreenIdx = (yellowIdx + 1) % nextState.length;
+                        nextState[nextGreenIdx].phase = 'GREEN';
+                        nextState[nextGreenIdx].nextChange = Math.max(1, Math.floor(nextState[nextGreenIdx].greenTime || 30));
+                        greenIdx = nextGreenIdx;
+                        yellowIdx = -1;
+                    }
+                } else {
+                    if (greenIdx === -1) {
+                        greenIdx = 0;
+                        nextState[0].phase = 'GREEN';
+                    }
+                    nextState[greenIdx].nextChange = Math.max(0, nextState[greenIdx].nextChange - 1);
+                    
+                    if (nextState[greenIdx].nextChange === 0) {
+                        nextState[greenIdx].phase = 'RED';
+                        const nextGI = (greenIdx + 1) % nextState.length;
+                        nextState[nextGI].phase = 'GREEN';
+                        nextState[nextGI].nextChange = Math.max(1, Math.floor(nextState[nextGI].greenTime || 30));
+                        greenIdx = nextGI;
+                    } else if (nextState[greenIdx].nextChange <= 3) {
+                        nextState[greenIdx].phase = 'YELLOW';
+                        yellowIdx = greenIdx;
+                        greenIdx = -1;
+                    }
                 }
 
                 // Cascade wait times for RED lights
-                let accumulatedWait = nextState[greenIdx].nextChange;
-                for (let i = 1; i < nextState.length; i++) {
-                    const idx = (greenIdx + i) % nextState.length;
-                    nextState[idx].nextChange = accumulatedWait;
-                    accumulatedWait += (nextState[idx].greenTime || 30);
+                const activeIdx = greenIdx !== -1 ? greenIdx : yellowIdx;
+                if (activeIdx !== -1) {
+                    let accumulatedWait = nextState[activeIdx].nextChange;
+                    for (let i = 1; i < nextState.length; i++) {
+                        const idx = (activeIdx + i) % nextState.length;
+                        if (nextState[idx].phase === 'RED') {
+                            nextState[idx].nextChange = accumulatedWait;
+                            accumulatedWait += (nextState[idx].greenTime || 30);
+                        }
+                    }
                 }
 
                 return nextState;
@@ -126,7 +139,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
                     style={{ marginLeft: 'auto' }}
                 >
                     <span className="pulse-dot" style={{ background: '#10b981' }} />
-                    {fromVideo ? 'From Video' : 'Synced'}
+                    {fromVideo ? 'From Images' : 'Synced from Backend'}
                 </div>
             </div>
 
@@ -188,30 +201,26 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
 };
 
 const SignalRow = ({ signal, cycleLen }) => {
-    const ph = phaseConfig[signal.phase] ?? phaseConfig.RED;
     const pr = priorityConfig[signal.priority] ?? priorityConfig.Low;
 
     return (
         <div className="signal-block" style={{ background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                {/* Lane + Light */}
+                {/* Lane */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ fontSize: '1.4rem' }}>{ph.light}</div>
                     <div>
-                        <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#e2e8f0' }}>{signal.lane} — Signal</div>
+                        <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#e2e8f0' }}>{signal.lane} Lane</div>
                         <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                            Next change in {Math.floor(signal.nextChange)}s
-                            {signal.vehicleCount != null && (
-                                <span style={{ marginLeft: '8px', color: '#475569' }}>· {signal.vehicleCount} vehicles</span>
+                            {signal.vehicleCount != null ? (
+                                <span style={{ color: '#475569' }}>{signal.vehicleCount} vehicles detected</span>
+                            ) : (
+                                <span>AI Optimized</span>
                             )}
                         </div>
                     </div>
                 </div>
                 {/* Badges */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ padding: '3px 10px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.08em', background: ph.bg, color: ph.color, border: `1px solid ${ph.border}` }}>
-                        {signal.phase}
-                    </span>
                     <span style={{ padding: '3px 10px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: 700, background: pr.bg, color: pr.color }}>
                         {signal.priority}
                     </span>

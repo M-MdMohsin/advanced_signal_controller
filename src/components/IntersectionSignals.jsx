@@ -248,20 +248,15 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
       }
 
       // Startup initialization (first time)
-      let greenFound = false;
       const mapped = DIRECTIONS.map((dir, i) => {
         const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
         
-        let basePhase = 'RED';
-        if ((raw.phase === 'GREEN' || raw.phase === 'YELLOW') && !greenFound) {
-          basePhase = 'GREEN';
-          greenFound = true;
-        }
+        let basePhase = i === 0 ? 'GREEN' : 'RED';
         
         return {
           direction:    dir,
           phase:        basePhase,
-          timer:        Math.floor(raw.nextChange ?? raw.greenTime ?? 30),
+          timer:        Math.floor(raw.greenTime ?? 30),
           greenTime:    Math.floor(raw.greenTime ?? 30),
           vehicleCount: raw.vehicleCount ?? null,
           density:      countToDensity(raw.vehicleCount),
@@ -269,19 +264,12 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
         };
       });
 
-      if (!greenFound && mapped.length > 0) {
-        mapped[0].phase = 'GREEN';
-        mapped[0].timer = mapped[0].greenTime;
-      }
-
-      const gIdx = mapped.findIndex(s => s.phase === 'GREEN');
-      if (gIdx !== -1) {
-        let wait = mapped[gIdx].timer;
-        for (let i = 1; i < mapped.length; i++) {
-          const ri = (gIdx + i) % mapped.length;
-          mapped[ri].timer = wait;
-          wait += mapped[ri].greenTime;
-        }
+      const gIdx = 0;
+      let wait = mapped[gIdx].timer;
+      for (let i = 1; i < mapped.length; i++) {
+        const ri = (gIdx + i) % mapped.length;
+        mapped[ri].timer = wait;
+        wait += mapped[ri].greenTime;
       }
       return mapped;
     });
