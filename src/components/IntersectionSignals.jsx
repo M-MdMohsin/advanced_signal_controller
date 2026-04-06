@@ -53,7 +53,7 @@ const MiniLight = ({ phase }) => {
 };
 
 // ── Single direction card ───────────────────────────────────────────────────────
-const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
+const SignalCard = ({ direction, phase, timer, density, vehicleCount, isPriority }) => {
   const ph = PHASE_CFG[phase]  ?? PHASE_CFG.RED;
   const dn = DENSITY_CFG[density] ?? DENSITY_CFG.Medium;
 
@@ -84,6 +84,20 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
         borderRadius: '50%', pointerEvents: 'none',
         ...yellowPulse,
       }} />
+
+      {/* Emergency priority badge */}
+      {isPriority && (
+        <div style={{
+          position: 'absolute', top: 8, left: 10, zIndex: 2,
+          display: 'flex', alignItems: 'center', gap: '4px',
+          padding: '2px 8px', borderRadius: '5px',
+          background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.5)',
+          fontSize: '0.58rem', fontWeight: 800, color: '#ef4444',
+          letterSpacing: '0.07em', animation: 'yellowBlink 0.9s ease-in-out infinite',
+        }}>
+          🚨 PRIORITY
+        </div>
+      )}
 
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -159,12 +173,13 @@ const SignalCard = ({ direction, phase, timer, density, vehicleCount }) => {
 };
 
 // ── Main component ─────────────────────────────────────────────────────────────
-const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
+const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priorityLane, priorityMode = 'deferred' }) => {
   const [signals, setSignals] = useState([]);
-  const prevDataRef     = useRef(null);  // track last JSON to avoid restarting on unchanged polls
-  const bgJobIdRef      = useRef(null);  // background job currently being polled
-  const bgPollRef       = useRef(null);  // setInterval handle for background poll
-  const prevGreenDirRef = useRef(null);  // direction that was green last tick
+  const prevDataRef        = useRef(null);  // track last JSON to avoid restarting on unchanged polls
+  const bgJobIdRef         = useRef(null);  // background job currently being polled
+  const bgPollRef          = useRef(null);  // setInterval handle for background poll
+  const prevGreenDirRef    = useRef(null);  // direction that was green last tick
+  const pendingPriorityRef = useRef(null);  // deferred: applied at next cycle boundary
   const [bgState, setBgState] = useState('idle'); // 'idle' | 'processing' | 'ready'
 
   // ── Stop background poll ───────────────────────────────────────────────────
@@ -211,6 +226,52 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
 
   // Cleanup on unmount
   useEffect(() => () => stopBgPoll(), [stopBgPoll]);
+
+  // ── Priority lane handling ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!priorityLane) return;
+
+    if (priorityMode === 'immediate') {
+      // Immediately interrupt, reorder array so priority lane is index 0
+      setSignals(prev => {
+        if (!prev || prev.length === 0) return prev;
+        const pIdx = prev.findIndex(s => s.direction === priorityLane);
+        if (pIdx === -1) return prev;
+        if (prev[0].direction === priorityLane && prev[0].phase === 'GREEN') return prev; // already running as priority
+        
+        let next = prev.map(s => ({ ...s }));
+        
+        // Unshift priority lane to index 0
+        if (pIdx > 0) {
+          const [ps] = next.splice(pIdx, 1);
+          next.unshift(ps);
+        }
+        
+        // Everything becomes RED except index 0
+        for (let i = 1; i < next.length; i++) {
+          next[i].phase = 'RED';
+          next[i].yellowPending = false;
+        }
+        
+        // Index 0 becomes GREEN
+        next[0].phase = 'GREEN';
+        next[0].yellowPending = false;
+        next[0].timer = Math.max(1, next[0].greenTime ?? 30);
+        
+        // Recalculate RED wait times
+        let wait = next[0].timer;
+        for (let i = 1; i < next.length; i++) {
+          next[i].timer = wait;
+          wait += (next[i].greenTime ?? 30);
+        }
+        
+        return next;
+      });
+    } else {
+      // Deferred: queue for the next cycle boundary
+      pendingPriorityRef.current = priorityLane;
+    }
+  }, [priorityLane, priorityMode]);
 
   // ── Trigger detection 20s before cycle finishes ────────────────────────────
   useEffect(() => {
@@ -293,13 +354,26 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
           next[yellowIdx].timer = Math.max(0, next[yellowIdx].timer - 1);
 
           if (next[yellowIdx].timer === 0) {
-            next[yellowIdx].phase        = 'RED';
+            next[yellowIdx].phase         = 'RED';
             next[yellowIdx].yellowPending = false;
-            const nextGreenIdx           = (yellowIdx + 1) % next.length;
-            next[nextGreenIdx].phase     = 'GREEN';
-            next[nextGreenIdx].timer     = Math.max(1, next[nextGreenIdx].greenTime ?? 30);
-            greenIdx                     = nextGreenIdx;
-            yellowIdx                    = -1;
+            let nextGreenIdx              = (yellowIdx + 1) % next.length;
+
+            // ── Deferred: reorder entire cycle at boundary (background detect) ──
+            if (nextGreenIdx === 0 && pendingPriorityRef.current) {
+              const pDir = pendingPriorityRef.current;
+              pendingPriorityRef.current = null;
+              const pIdx = next.findIndex(s => s.direction === pDir);
+              if (pIdx > 0) {
+                const [ps] = next.splice(pIdx, 1);
+                next.unshift(ps);
+              }
+              nextGreenIdx = 0;
+            }
+
+            next[nextGreenIdx].phase = 'GREEN';
+            next[nextGreenIdx].timer = Math.max(1, next[nextGreenIdx].greenTime ?? 30);
+            greenIdx  = nextGreenIdx;
+            yellowIdx = -1;
           }
         } else {
           if (greenIdx === -1) {
@@ -311,10 +385,23 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
 
           if (next[greenIdx].timer === 0) {
             next[greenIdx].phase = 'RED';
-            const nextGI = (greenIdx + 1) % next.length;
-            next[nextGI].phase   = 'GREEN';
-            next[nextGI].timer   = Math.max(1, next[nextGI].greenTime ?? 30);
-            greenIdx             = nextGI;
+            let nextGI = (greenIdx + 1) % next.length;
+
+            // ── Deferred: reorder entire cycle at boundary (background detect) ──
+            if (nextGI === 0 && pendingPriorityRef.current) {
+              const pDir = pendingPriorityRef.current;
+              pendingPriorityRef.current = null;
+              const pIdx = next.findIndex(s => s.direction === pDir);
+              if (pIdx > 0) {
+                const [ps] = next.splice(pIdx, 1);
+                next.unshift(ps);
+              }
+              nextGI = 0;
+            }
+
+            next[nextGI].phase = 'GREEN';
+            next[nextGI].timer = Math.max(1, next[nextGI].greenTime ?? 30);
+            greenIdx = nextGI;
           } else if (next[greenIdx].timer <= YELLOW_SECS) {
             next[greenIdx].phase = 'YELLOW';
             yellowIdx            = greenIdx;
@@ -401,6 +488,24 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
         </div>
       </div>
 
+      {priorityLane && (
+        <div style={{
+          padding: '12px 18px', background: 'rgba(239, 68, 68, 0.15)',
+          border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: '12px',
+          marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px'
+        }}>
+          <span style={{ fontSize: '1.2rem', animation: 'yellowBlink 1s infinite' }}>🚨</span>
+          <div>
+            <div style={{ fontWeight: 700, color: '#fca5a5', fontSize: '0.85rem' }}>Priority Flow Active</div>
+            <div style={{ fontSize: '0.75rem', color: '#f87171' }}>
+              {priorityMode === 'immediate' 
+                ? `${priorityLane} Lane has been given immediate green signal.`
+                : `${priorityLane} Lane is queued for priority at the next cycle boundary.`}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Phase legend */}
       <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
         {[
@@ -435,6 +540,7 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult }) => {
             timer={sig.timer}
             density={sig.density}
             vehicleCount={sig.vehicleCount}
+            isPriority={!!priorityLane && sig.direction === priorityLane}
           />
         ))}
       </div>

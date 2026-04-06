@@ -194,6 +194,8 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str, target_lane: 
     # ── Accumulators ─────────────────────────────────────────────────────────
     # peak count per lane across all sampled frames
     peak_counts:  dict[str, int] = {n: 0 for n in active_lanes}
+    # peak bus count per lane (heuristic emergency detection)
+    peak_bus:     dict[str, int] = {n: 0 for n in active_lanes}
     # running sum + sample count for average (kept for future use)
     sum_counts:   dict[str, int] = {n: 0 for n in active_lanes}
     frames_sampled = 0
@@ -225,6 +227,7 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str, target_lane: 
         results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
         detections = []
         frame_lane_counts: dict[str, int] = {n: 0 for n in active_lanes}
+        frame_bus_counts:  dict[str, int] = {n: 0 for n in active_lanes}
 
         for result in results:
             boxes = result.boxes
@@ -241,6 +244,8 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str, target_lane: 
 
                 if lane:
                     frame_lane_counts[lane] += 1
+                    if cls_id == 5:  # bus
+                        frame_bus_counts[lane] += 1
                     detections.append({
                         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                         "class": VEHICLE_CLASSES[cls_id],
@@ -252,6 +257,7 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str, target_lane: 
         for name in active_lanes:
             c = frame_lane_counts[name]
             peak_counts[name] = max(peak_counts[name], c)
+            peak_bus[name]    = max(peak_bus[name], frame_bus_counts[name])
             sum_counts[name]  += c
 
         frames_sampled += 1
@@ -293,6 +299,7 @@ def detect_vehicles(video_path: str, job_store: dict, job_id: str, target_lane: 
             "name":         f"{name} Lane",
             "lane":         name,
             "vehicleCount": count,
+            "busCount":     peak_bus[name],
             "density":      density,
             "trend":        trend,
             **meta,
@@ -358,6 +365,7 @@ def detect_image(image_path: str, job_store: dict, job_id: str, target_lane: str
     results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
     detections = []
     lane_counts: dict[str, int] = {n: 0 for n in active_lanes}
+    bus_counts:  dict[str, int] = {n: 0 for n in active_lanes}
 
     for result in results:
         boxes = result.boxes
@@ -374,6 +382,8 @@ def detect_image(image_path: str, job_store: dict, job_id: str, target_lane: str
 
             if lane:
                 lane_counts[lane] += 1
+                if cls_id == 5:  # bus
+                    bus_counts[lane] += 1
                 detections.append({
                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                     "class": VEHICLE_CLASSES[cls_id],
@@ -408,6 +418,7 @@ def detect_image(image_path: str, job_store: dict, job_id: str, target_lane: str
             "name":         f"{name} Lane",
             "lane":         name,
             "vehicleCount": count,
+            "busCount":     bus_counts[name],
             "density":      density,
             "trend":        trend,
             **meta,
