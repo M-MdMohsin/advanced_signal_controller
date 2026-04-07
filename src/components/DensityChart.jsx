@@ -50,7 +50,13 @@ const baseChartOptions = {
             bodyColor: '#94a3b8',
             padding: 12,
             callbacks: {
-                label: (ctx) => ` ${ctx.dataset.label}: ${ctx.raw}%`,
+                label: (ctx) => {
+                    let label = ` ${ctx.dataset.label}: ${ctx.raw}%`;
+                    if (ctx.dataset.vehicleCounts && ctx.dataset.vehicleCounts[ctx.dataIndex] !== undefined) {
+                        label += ` (${ctx.dataset.vehicleCounts[ctx.dataIndex]} vehicles)`;
+                    }
+                    return label;
+                },
             },
         },
     },
@@ -75,12 +81,14 @@ const baseChartOptions = {
     },
 };
 
-const DensityChart = () => {
+const DensityChart = ({ liveData = null, currentDensity = null }) => {
     const [chartType, setChartType] = useState('bar');
+    const densityData = (currentDensity && currentDensity.length > 0) ? currentDensity : laneDensityData;
+    const historyData = liveData || chartHistoryData;
 
     // Bar chart – current snapshot
     const barData = {
-        labels: laneDensityData.map((l) => l.name),
+        labels: densityData.map((l) => l.name),
         datasets: [
             {
                 label: 'Vehicle Density',
@@ -95,18 +103,19 @@ const DensityChart = () => {
                 borderWidth: 2,
                 borderRadius: 8,
                 borderSkipped: false,
+                vehicleCounts: densityData.map((l) => l.vehicleCount),
             },
         ],
     };
 
     // Line chart – historical trend
     const lineData = {
-        labels: chartHistoryData.labels,
+        labels: historyData.labels,
         datasets: [
-            { label: 'North Lane', data: chartHistoryData.north, borderColor: laneColors.North.border, backgroundColor: laneColors.North.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
-            { label: 'South Lane', data: chartHistoryData.south, borderColor: laneColors.South.border, backgroundColor: laneColors.South.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
-            { label: 'East Lane', data: chartHistoryData.east, borderColor: laneColors.East.border, backgroundColor: laneColors.East.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
-            { label: 'West Lane', data: chartHistoryData.west, borderColor: laneColors.West.border, backgroundColor: laneColors.West.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
+            { label: 'North Lane', data: historyData.north, borderColor: laneColors.North.border, backgroundColor: laneColors.North.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
+            { label: 'South Lane', data: historyData.south, borderColor: laneColors.South.border, backgroundColor: laneColors.South.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
+            { label: 'East Lane', data: historyData.east, borderColor: laneColors.East.border, backgroundColor: laneColors.East.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
+            { label: 'West Lane', data: historyData.west, borderColor: laneColors.West.border, backgroundColor: laneColors.West.bg, tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 6, borderWidth: 2 },
         ],
     };
 
@@ -161,9 +170,9 @@ const DensityChart = () => {
 
             {/* Summary row */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginTop: '18px', paddingTop: '18px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                {laneDensityData.map((lane) => {
+                {densityData.slice(0, 4).map((lane, idx) => {
                     const colors = Object.values(laneColors);
-                    const c = colors[lane.id - 1];
+                    const c = colors[idx % colors.length];
                     return (
                         <div key={lane.id} style={{ textAlign: 'center' }}>
                             <div style={{ width: '28px', height: '4px', background: c.border, borderRadius: '2px', margin: '0 auto 6px' }} />

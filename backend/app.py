@@ -26,6 +26,9 @@ def create_app():
     app.register_blueprint(dashboard_bp, url_prefix="/api/dashboard")
     app.register_blueprint(detection_bp, url_prefix="/api/detection")
 
+    from routes.auth import auth_bp
+    app.register_blueprint(auth_bp, url_prefix="/api/auth")
+
     @app.route("/api/health")
     def health():
         # Report whether YOLO is available

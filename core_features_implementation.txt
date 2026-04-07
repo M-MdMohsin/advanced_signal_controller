@@ -1,0 +1,47 @@
+========================================================================
+CORE IMPLEMENTATION: AI TRAFFIC SIGNAL & EMERGENCY PRIORITY SYSTEM
+========================================================================
+
+Donon major features (Density-based Signal Prediction aur Emergency Priority) ka core workflow aur implementation niche explain kiya gaya hai (Hinglish mein).
+
+------------------------------------------------------------------------
+1. DENSITY BASED PREDICTION (Traffic Density ke hisaab se signal timing)
+------------------------------------------------------------------------
+Yeh feature har lane mein real-time gaadiyon ko (vehicle count) detect karke, uske hisaab se Green Signal ka time automatically calculate aur update karta hai.
+
+🛑 MAIN COMPONENTS:
+1. Backend Detector (yolo_detector.py): YOLOv8 framework use karke frames aur images detect hote hain. Yeh specifically cars, bikes, aur trucks count karta hai region-of-interest (ROI) mein.
+2. Time Allocation Logic (signal_logic.py): Detected total vehicles ko receive karke har lane ka density measure karta hai (Low, Medium, High). Us base par base_time ke sath ek specific multiplier multiply hota hai jisse proper green-time banta hai.
+3. React Frontend (IntersectionSignals.jsx): API se time le kar UI timers (Green, Yellow, Red) smoothly chalaata hai bina old timers ko break kiye.
+
+🔄 WORKFLOW (Kaise Kaam Karta Hai):
+1. Camera feed / Folder images backend ke paas processing ke liye jaate hain.
+2. YOLOv8 model unko analyse karke batata hai, example: North mein 15 gaadiyan hain, East mein 4 gaadiyan hain.
+3. Allocation server isko convert karta hai: North (High density = 50s green time), East (Low density = 20s green time).
+4. Yeh data JSON format return karta hai React dashboard pe.
+5. Signal component live time cascade ko unhi timers par override kar deta hai red/green wait delays calculate karke.
+
+------------------------------------------------------------------------
+2. EMERGENCY VEHICLE PRIORITY (VIP / Emergency Logic)
+------------------------------------------------------------------------
+Yeh feature detect karta hai agar kisi specific lane mein emergency vehicle aayi hai. Jaise hi milti hai, strict sequential traffic flow ko alter karke us emergency lane ko top priority de di jaati hai (taaki wo fast cross kar sake).
+
+🛑 MAIN COMPONENTS:
+1. Heuristic Detection Logic (yolo_detector.py): Normal gaadiyon ke count ke sath-sath, YOLO class '5' (Bus/Emergency) ko track karta hai aur API result mein `busCount: 1` assign karke bhejta hai.
+2. Priority Data Wiring (App.jsx ko): Dashboard me `heuristicEmergencyEvents` variable fetch/derive karta hai aur Priority Route create karke us lane ka naam define karta hai (e.g. `priorityLane = 'West'`).
+3. Priority Resequencing Algorithm (IntersectionSignals.jsx): The core! Yeh signal array ko physical Queue data structure ki tarah map karta hai index 0 par replace karke. 
+
+🔄 WORKFLOW (Do Methods hain):
+
+Method A: Immediate Mode (Jab Manual 'Run YOLO' press kiya):
+1. Result ne kaha West mein emergency gaadi (Bus) hai.
+2. Mode "immediate" trigger hota hai, jiska matlab hai: Current jo bhi lane GREEN chal rahi waha turant achanak rukawat lao, use RED karo.
+3. Array Re-ordering chalti h: West lane ko queue mein se chhin kar Array ke sabse uppar (Index 0) shift kardia jata hai `next.unshift(ps)`.
+4. Resulting Cycle: West turant RED se GREEN hojati hai with full remaining time, aur baki sequence wahin se count hone lagti hai queue format mein (West -> North -> East -> South).
+
+Method B: Deferred Mode (Background Auto-detector Mode):
+1. Current traffic flow normal cycle chala raha hai (North->South->...). Cycle finish hone se just 20 seconds pehle background mei YOLO analyze karne jata hai.
+2. Agar aawaz aayi ki South lane me bus hai, toh flow ko direct disrupt nahi karte (accident rokne ke liye), balki background mein us request ko `pendingPriorityRef` variable me QUEUE kar dia jata hai.
+3. Jaise hi currently chalne wala green signal khatam hoke cycle end boundary par aata hai (NextGreenIdx === 0).
+4. Turant algorithm condition read karta hai ki "kya piche koi delayed request thi?". Haan, thi (South).
+5. Next cycle direct array splice mar ke South ko Index 0 front position de dety hai. South pehle green hojaeyga baki normal turn lenge.

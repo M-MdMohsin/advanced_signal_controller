@@ -11,6 +11,7 @@ import EmergencyVehicle from './components/EmergencyVehicle';
 import LicensePlate from './components/LicensePlate';
 import ViolationLogs from './components/ViolationLogs';
 import { getDashboardSummary, triggerAutoDetect, getVideoStatus } from './api/index.js';
+import Login from './pages/Login';
 
 const BACKEND = import.meta.env.VITE_API_URL
   ? import.meta.env.VITE_API_URL.replace('/api', '')
@@ -437,8 +438,36 @@ const Dashboard = () => {
   // Memoised by JSON content so the reference only changes when actual values
   // differ — prevents SignalAllocation / IntersectionSignals from restarting
   // their countdown cycle on every 15-second dashboard poll.
-  const rawSignalData    = detectionData?.signalAllocation ?? dashData?.signalAllocation;
-  const rawLaneDensity   = detectionData?.laneDetails      ?? dashData?.laneDensity;
+  const rawSignalData = detectionData?.signalAllocation ?? dashData?.signalAllocation;
+  
+  const rawLaneDensity = useMemo(() => {
+    if (detectionData?.laneDetails && Array.isArray(detectionData.laneDetails)) {
+      const total = detectionData.totalVehicles || 1;
+      return detectionData.laneDetails.map((l, i) => {
+        const count = l.vehicleCount ?? l.vehicle_count ?? 0;
+        const pct = (count / total) * 100;
+        let status = 'low';
+        // Map realistic visual density based on share
+        let densePct = Math.min(100, Math.round(pct * 2.5));
+        if (densePct === 0 && count > 0) densePct = 10;
+        
+        if (pct >= 40) status = 'critical';
+        else if (pct >= 28) status = 'high';
+        else if (pct >= 16) status = 'moderate';
+        
+        return {
+          id: i + 1,
+          name: `${l.lane || l.direction || 'Unknown'} Lane`,
+          density: densePct,
+          status,
+          vehicleCount: count,
+          trend: 'stable'
+        };
+      });
+    }
+    return dashData?.laneDensity;
+  }, [detectionData?.laneDetails, detectionData?.totalVehicles, dashData?.laneDensity]);
+
   const signalDataKey    = JSON.stringify(rawSignalData);
   const laneDensityKey   = JSON.stringify(rawLaneDensity);
 
@@ -578,7 +607,7 @@ const Dashboard = () => {
               <IntersectionSignals liveData={signalData} fromVideo={fromVideo} onNewDetectionResult={handleDetectionComplete} priorityLane={priorityLane} priorityMode={priorityMode} />
             </div>
             <div style={{ marginBottom: '20px' }}>
-              <DensityChart liveData={dashData?.chartHistory} />
+              <DensityChart liveData={dashData?.chartHistory} currentDensity={laneDensityData} />
             </div>
           </>
         )}
@@ -592,7 +621,7 @@ const Dashboard = () => {
             <div style={{ marginBottom: '20px' }}>
               <LaneDensityCards liveData={laneDensityData} fromVideo={fromVideo} />
             </div>
-            <DensityChart liveData={dashData?.chartHistory} />
+            <DensityChart liveData={dashData?.chartHistory} currentDensity={laneDensityData} />
           </>
         )}
 
@@ -631,11 +660,22 @@ const Dashboard = () => {
 };
 
 // ── Root App ──────────────────────────────────────────────────────────────────
-const App = () => (
-  <Routes>
-    <Route path="/"          element={<Home />} />
-    <Route path="/dashboard" element={<Dashboard />} />
-  </Routes>
-);
+const App = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  return (
+    <Routes>
+      <Route 
+        path="/" 
+        element={!isAuthenticated ? <Login onLogin={() => setIsAuthenticated(true)} /> : <Home />} 
+      />
+      <Route 
+        path="/dashboard" 
+        // element={isAuthenticated ? <Dashboard /> : <Login onLogin={(user) => setIsAuthenticated(true)} />} 
+        element={<Dashboard />} 
+      />
+    </Routes>
+  );
+};
 
 export default App;

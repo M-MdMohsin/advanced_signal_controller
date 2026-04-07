@@ -209,7 +209,7 @@ const Home = () => {
             boxShadow: '0 4px 12px rgba(99,102,241,0.4)',
           }}>🚦</div>
           <span style={{ fontWeight: 800, fontSize: '0.95rem', color: '#e2e8f0' }}>
-            ATMS <span style={{ color: '#475569', fontWeight: 400 }}>v2.4</span>
+            ATMS 
           </span>
         </div>
 
@@ -244,7 +244,7 @@ const Home = () => {
       }}>
 
         {/* Live badge */}
-        <div style={{
+        {/* <div style={{
           display: 'inline-flex', alignItems: 'center', gap: '8px',
           padding: '6px 18px', marginBottom: '28px',
           background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)',
@@ -254,7 +254,7 @@ const Home = () => {
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981',
             animation: 'pulse 2s infinite', display: 'inline-block' }} />
           Powered by YOLOv8 · Flask · Real-time AI
-        </div>
+        </div> */}
 
         {/* Title */}
         <h1 style={{
@@ -402,7 +402,7 @@ const Home = () => {
         fontSize: '0.7rem', color: '#334155', letterSpacing: '0.04em',
         borderTop: '1px solid rgba(255,255,255,0.04)',
       }}>
-        ATMS v2.4 · Flask + YOLOv8 · React + Vite
+        ATMS
       </footer>
 
       <style>{`
