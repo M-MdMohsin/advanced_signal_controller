@@ -18,7 +18,7 @@ const priorityConfig = {
 // liveData  – signal allocation array from backend or YOLO detection results.
 //             Falls back to static dummyData only when liveData is absent.
 // fromVideo – boolean: true when green-times were computed from a real video
-const SignalAllocation = ({ liveData, fromVideo }) => {
+const SignalAllocation = ({ liveData, fromVideo, priorityLane }) => {
     const [mode, setMode] = useState('AI Adaptive');
     const modes = ['AI Adaptive', 'Fixed Cycle', 'Manual', 'Emergency'];
 
@@ -27,7 +27,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
 
     // 1. Sync incoming data — only reset cycle when content actually changes
     useEffect(() => {
-        const incoming = JSON.stringify(liveData);
+        const incoming = JSON.stringify({ liveData, priorityLane });
         if (incoming === prevDataRef.current) return;
         prevDataRef.current = incoming;
 
@@ -38,14 +38,23 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
             const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
             return {
                 lane: dir,
-                phase: i === 0 ? 'GREEN' : 'RED',
-                nextChange: Math.floor(raw.greenTime ?? 30),
-                greenTime: Math.floor(raw.greenTime ?? 30),
+                phase: 'RED',
+                nextChange: Math.floor(raw.greenTime ?? 15),
+                greenTime: Math.floor(raw.greenTime ?? 15),
                 vehicleCount: raw.vehicleCount ?? null,
                 priority: raw.priority ?? 'Medium'
             };
         });
 
+        if (priorityLane) {
+            const pIdx = freshSignals.findIndex(s => s.lane === priorityLane);
+            if (pIdx > 0) {
+                const [ps] = freshSignals.splice(pIdx, 1);
+                freshSignals.unshift(ps);
+            }
+        }
+
+        freshSignals[0].phase = 'GREEN';
         let wait = freshSignals[0].nextChange;
         for (let i = 1; i < freshSignals.length; i++) {
             freshSignals[i].nextChange = wait;
@@ -72,7 +81,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
                         nextState[yellowIdx].phase = 'RED';
                         const nextGreenIdx = (yellowIdx + 1) % nextState.length;
                         nextState[nextGreenIdx].phase = 'GREEN';
-                        nextState[nextGreenIdx].nextChange = Math.max(1, Math.floor(nextState[nextGreenIdx].greenTime || 30));
+                        nextState[nextGreenIdx].nextChange = Math.max(1, Math.floor(nextState[nextGreenIdx].greenTime || 15));
                         greenIdx = nextGreenIdx;
                         yellowIdx = -1;
                     }
@@ -87,7 +96,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
                         nextState[greenIdx].phase = 'RED';
                         const nextGI = (greenIdx + 1) % nextState.length;
                         nextState[nextGI].phase = 'GREEN';
-                        nextState[nextGI].nextChange = Math.max(1, Math.floor(nextState[nextGI].greenTime || 30));
+                        nextState[nextGI].nextChange = Math.max(1, Math.floor(nextState[nextGI].greenTime || 15));
                         greenIdx = nextGI;
                     } else if (nextState[greenIdx].nextChange <= 3) {
                         nextState[greenIdx].phase = 'YELLOW';
@@ -104,7 +113,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
                         const idx = (activeIdx + i) % nextState.length;
                         if (nextState[idx].phase === 'RED') {
                             nextState[idx].nextChange = accumulatedWait;
-                            accumulatedWait += (nextState[idx].greenTime || 30);
+                            accumulatedWait += (nextState[idx].greenTime || 15);
                         }
                     }
                 }
@@ -117,7 +126,7 @@ const SignalAllocation = ({ liveData, fromVideo }) => {
     }, [signals.length]); // bind only once per array shape
 
     // Total cycle = sum of all green times
-    const cycleLen = signals.reduce((s, sig) => s + (sig.greenTime ?? 0), 0) || 155;
+    const cycleLen = signals.reduce((s, sig) => s + (sig.greenTime ?? 0), 0) || 60;
 
     return (
         <div className="glass-card animate-fade-in-up animate-delay-2" style={{ padding: '24px' }}>

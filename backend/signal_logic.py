@@ -5,8 +5,8 @@ Formula:
     GreenTime = MIN_GREEN + (lane_count / total_count) × (MAX_GREEN − MIN_GREEN)
 """
 
-MIN_GREEN = 10   # seconds
-MAX_GREEN = 90   # seconds
+MIN_GREEN = 5    # seconds
+MAX_GREEN = 45   # seconds
 
 DIRECTIONS = ["North", "South", "East", "West"]
 

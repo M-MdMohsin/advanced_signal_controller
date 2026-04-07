@@ -8,8 +8,6 @@ import SignalAllocation from './components/SignalAllocation';
 import IntersectionSignals from './components/IntersectionSignals';
 import DensityChart from './components/DensityChart';
 import EmergencyVehicle from './components/EmergencyVehicle';
-import LicensePlate from './components/LicensePlate';
-import ViolationLogs from './components/ViolationLogs';
 import { getDashboardSummary, triggerAutoDetect, getVideoStatus } from './api/index.js';
 import Login from './pages/Login';
 
@@ -124,7 +122,7 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh, externalImages, exter
   useEffect(() => () => stopPolling(), []);
 
   const theme = {
-    idle:    { accent: '#3b82f6', glow: 'rgba(59,130,246,0.35)',  label: 'Run YOLO Detection',  icon: '🤖' },
+    idle:    { accent: '#3b82f6', glow: 'rgba(59,130,246,0.35)',  label: 'Run YOLO Detection',  icon: '' },
     running: { accent: '#f59e0b', glow: 'rgba(245,158,11,0.35)',  label: 'Analysing…',           icon: '⚙️' },
     done:    { accent: '#10b981', glow: 'rgba(16,185,129,0.35)',  label: 'Run Again',            icon: '✅' },
     error:   { accent: '#ef4444', glow: 'rgba(239,68,68,0.35)',   label: 'Retry',                icon: '⚠️' },
@@ -332,17 +330,18 @@ const AutoDetectPanel = ({ onDetectionComplete, onRefresh, externalImages, exter
 
 
 // ── Top stat bar ──────────────────────────────────────────────────────────────
-const TopStatBar = ({ stats, videoStats, emergencyCount }) => {
+const TopStatBar = ({ stats, videoStats, emergencyLane }) => {
   const defaultStats = [
     { label: 'Total Vehicles Today', value: '—', icon: '🚗', color: '#3b82f6' },
-    { label: 'Violations Detected',  value: '—', icon: '⚠️', color: '#ef4444' },
     { label: 'Avg Wait Time',        value: '—', icon: '⏱️', color: '#f59e0b' },
     { label: 'Signal Cycles',        value: '—', icon: '🔄', color: '#10b981' },
     { label: 'Emergency Events',     value: '—', icon: '🚨', color: '#ef4444' },
     { label: 'AI Model Uptime',      value: '—', icon: '🤖', color: '#8b5cf6' },
   ];
 
-  let display = (stats && stats.length) ? [...stats] : [...defaultStats];
+  // Remove Violations from any fetched stats, then use fallback or mapped
+  let display = (stats && stats.length) ? stats.filter(s => s.label !== 'Violations Detected') : [...defaultStats];
+
   if (videoStats) {
     display = display.map(s =>
       s.label === 'Total Vehicles Today'
@@ -350,16 +349,15 @@ const TopStatBar = ({ stats, videoStats, emergencyCount }) => {
         : s
     );
   }
-  if (emergencyCount != null) {
-    display = display.map(s =>
-      s.label === 'Emergency Events'
-        ? { ...s, value: String(emergencyCount), icon: emergencyCount > 0 ? '🚨' : '✅' }
-        : s
-    );
-  }
+  
+  display = display.map(s =>
+    s.label === 'Emergency Events'
+      ? { ...s, value: emergencyLane ? `${emergencyLane} Lane` : 'None', icon: emergencyLane ? '🚨' : '✅' }
+      : s
+  );
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '12px', marginBottom: '24px' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', marginBottom: '24px' }}>
       {display.map(s => (
         <div key={s.label} className="glass-card" style={{ padding: '16px', textAlign: 'center', borderColor: `${s.color}22` }}>
           <div style={{ fontSize: '1.3rem', marginBottom: '6px' }}>{s.icon}</div>
@@ -410,7 +408,6 @@ const Dashboard = () => {
     { id: 'overview',   label: '🗺 Overview'  },
     { id: 'analytics',  label: '📊 Analytics' },
     { id: 'emergency',  label: '🚨 Emergency' },
-    { id: 'violations', label: '⚠️ Violations'},
   ];
 
   const fetchDashboard = useCallback(async () => {
@@ -503,13 +500,22 @@ const Dashboard = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detectionData?.laneDetails]);
 
-  // Derive the highest-priority lane direction (strip " Lane" suffix)
-  const priorityLane = heuristicEmergencyEvents.length > 0
-    ? heuristicEmergencyEvents[0].lane.replace(' Lane', '')
-    : null;
+  // Derive the highest-priority lane direction
+  const priorityLane = useMemo(() => {
+    if (heuristicEmergencyEvents.length > 0) {
+      return heuristicEmergencyEvents[0].lane.replace(' Lane', '');
+    }
+    const criticalLane = laneDensityData?.find(l => l.status === 'critical');
+    if (criticalLane) {
+      return criticalLane.name.replace(' Lane', '');
+    }
+    return null;
+  }, [heuristicEmergencyEvents, laneDensityData]);
 
   // 'immediate' = manual button click (same iteration), 'deferred' = background auto-detect
   const priorityMode = detectionMode === 'manual' ? 'immediate' : 'deferred';
+
+  const emergencyLaneForStats = heuristicEmergencyEvents.length > 0 ? heuristicEmergencyEvents[0].lane.replace(' Lane', '') : null;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--color-bg-primary)' }}>
@@ -589,7 +595,7 @@ const Dashboard = () => {
         </div>
 
         {/* Top stats */}
-        <TopStatBar stats={dashData?.topStats} videoStats={detectionData} emergencyCount={heuristicEmergencyEvents.length || undefined} />
+        <TopStatBar stats={dashData?.topStats} videoStats={detectionData} emergencyLane={emergencyLaneForStats} />
 
         {/* ── OVERVIEW TAB ── */}
         {activeTab === 'overview' && (
@@ -601,7 +607,7 @@ const Dashboard = () => {
                 externalImages={detectionData?.annotatedImages}
                 externalCounts={detectionData?.laneCounts}
               />
-              <SignalAllocation liveData={signalData} fromVideo={fromVideo} />
+              <SignalAllocation liveData={signalData} fromVideo={fromVideo} priorityLane={priorityLane} />
             </div>
             <div style={{ marginBottom: '20px' }}>
               <IntersectionSignals liveData={signalData} fromVideo={fromVideo} onNewDetectionResult={handleDetectionComplete} priorityLane={priorityLane} priorityMode={priorityMode} />
@@ -629,15 +635,7 @@ const Dashboard = () => {
         {activeTab === 'emergency' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <EmergencyVehicle heuristicEvents={heuristicEmergencyEvents} />
-            <SignalAllocation liveData={signalData} fromVideo={fromVideo} />
-          </div>
-        )}
-
-        {/* ── VIOLATIONS TAB ── */}
-        {activeTab === 'violations' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '20px' }}>
-            <ViolationLogs liveData={dashData?.violationLogs} />
-            <LicensePlate liveData={dashData?.detectedPlates} />
+            <SignalAllocation liveData={signalData} fromVideo={fromVideo} priorityLane={priorityLane} />
           </div>
         )}
       </main>

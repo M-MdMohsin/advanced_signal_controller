@@ -256,13 +256,13 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priori
         // Index 0 becomes GREEN
         next[0].phase = 'GREEN';
         next[0].yellowPending = false;
-        next[0].timer = Math.max(1, next[0].greenTime ?? 30);
+        next[0].timer = Math.max(1, next[0].greenTime ?? 15);
         
         // Recalculate RED wait times
         let wait = next[0].timer;
         for (let i = 1; i < next.length; i++) {
           next[i].timer = wait;
-          wait += (next[i].greenTime ?? 30);
+          wait += (next[i].greenTime ?? 15);
         }
         
         return next;
@@ -301,7 +301,7 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priori
           const raw = data.find(d => (d.lane || d.direction || '').includes(oldSig.direction)) || data[i % data.length];
           return {
             ...oldSig,
-            greenTime:    Math.floor(raw.greenTime ?? 30),
+            greenTime:    Math.floor(raw.greenTime ?? 15),
             vehicleCount: raw.vehicleCount ?? null,
             density:      countToDensity(raw.vehicleCount)
           };
@@ -312,19 +312,26 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priori
       const mapped = DIRECTIONS.map((dir, i) => {
         const raw = data.find(d => (d.lane || d.direction || '').includes(dir)) || data[i % data.length];
         
-        let basePhase = i === 0 ? 'GREEN' : 'RED';
-        
         return {
           direction:    dir,
-          phase:        basePhase,
-          timer:        Math.floor(raw.greenTime ?? 30),
-          greenTime:    Math.floor(raw.greenTime ?? 30),
+          phase:        'RED',
+          timer:        Math.floor(raw.greenTime ?? 15),
+          greenTime:    Math.floor(raw.greenTime ?? 15),
           vehicleCount: raw.vehicleCount ?? null,
           density:      countToDensity(raw.vehicleCount),
           yellowPending: false,
         };
       });
 
+      if (priorityLane) {
+        const pIdx = mapped.findIndex(s => s.direction === priorityLane);
+        if (pIdx > 0) {
+          const [ps] = mapped.splice(pIdx, 1);
+          mapped.unshift(ps);
+        }
+      }
+
+      mapped[0].phase = 'GREEN';
       const gIdx = 0;
       let wait = mapped[gIdx].timer;
       for (let i = 1; i < mapped.length; i++) {
@@ -371,7 +378,7 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priori
             }
 
             next[nextGreenIdx].phase = 'GREEN';
-            next[nextGreenIdx].timer = Math.max(1, next[nextGreenIdx].greenTime ?? 30);
+            next[nextGreenIdx].timer = Math.max(1, next[nextGreenIdx].greenTime ?? 15);
             greenIdx  = nextGreenIdx;
             yellowIdx = -1;
           }
@@ -400,7 +407,7 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priori
             }
 
             next[nextGI].phase = 'GREEN';
-            next[nextGI].timer = Math.max(1, next[nextGI].greenTime ?? 30);
+            next[nextGI].timer = Math.max(1, next[nextGI].greenTime ?? 15);
             greenIdx = nextGI;
           } else if (next[greenIdx].timer <= YELLOW_SECS) {
             next[greenIdx].phase = 'YELLOW';
@@ -428,7 +435,7 @@ const IntersectionSignals = ({ liveData, fromVideo, onNewDetectionResult, priori
             const ri = (activeIdx + i) % next.length;
             if (next[ri].phase === 'RED') {
               next[ri].timer = wait;
-              wait += (next[ri].greenTime ?? 30);
+              wait += (next[ri].greenTime ?? 15);
             }
           }
         }
